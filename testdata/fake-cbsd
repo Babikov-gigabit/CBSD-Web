@@ -1,0 +1,16 @@
+#!/bin/sh
+# Stand-in for /usr/local/bin/cbsd used in tests and UI development.
+# Prints its arguments (with colour codes, like real cbsd) and simulates work.
+cmd="$1"
+case "$cmd" in
+version) echo "14.3.0 (fake)"; exit 0 ;;
+jsnapshot|bsnapshot)
+	case "$*" in *mode=list*) printf 'SNAPNAME  CREATED\nweb20251001 2025-10-01 10:00\n'; exit 0 ;; esac ;;
+esac
+printf '\033[0;32mfake cbsd\033[0m: %s\n' "$*"
+for i in 1 2 3; do
+	echo "step $i/3 ..."
+	sleep "${FAKE_CBSD_DELAY:-0.3}"
+done
+case "$*" in *jname=fail*) echo "error: simulated failure" >&2; exit 1 ;; esac
+echo done

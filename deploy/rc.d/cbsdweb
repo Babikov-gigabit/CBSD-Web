@@ -1,0 +1,35 @@
+#!/bin/sh
+
+# PROVIDE: cbsdweb
+# REQUIRE: LOGIN NETWORKING cbsdd
+# KEYWORD: shutdown
+#
+# Add to /etc/rc.conf:
+#   cbsdweb_enable="YES"
+#   cbsdweb_config="/usr/local/etc/cbsd-web/cbsd-web.conf"   # optional
+
+. /etc/rc.subr
+
+name=cbsdweb
+rcvar=cbsdweb_enable
+
+load_rc_config $name
+
+: ${cbsdweb_enable:="NO"}
+: ${cbsdweb_user:="cbsdweb"}
+: ${cbsdweb_config:="/usr/local/etc/cbsd-web/cbsd-web.conf"}
+
+pidfile="/var/run/${name}/${name}.pid"
+cbsdweb_bin="/usr/local/sbin/cbsd-web"
+command="/usr/sbin/daemon"
+# daemon(8) supervises and restarts the server; -u drops to the unprivileged user.
+command_args="-f -r -R 5 -P ${pidfile} -S -T ${name} -u ${cbsdweb_user} ${cbsdweb_bin} -config ${cbsdweb_config} serve"
+
+start_precmd="${name}_prestart"
+
+cbsdweb_prestart()
+{
+	install -d -o ${cbsdweb_user} -g ${cbsdweb_user} -m 0750 /var/run/${name}
+}
+
+run_rc_command "$1"
