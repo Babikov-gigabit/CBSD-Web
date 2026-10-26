@@ -22,8 +22,10 @@ load_rc_config $name
 pidfile="/var/run/${name}/${name}.pid"
 cbsdweb_bin="/usr/local/sbin/cbsd-web"
 command="/usr/sbin/daemon"
-# daemon(8) supervises and restarts the server; -u drops to the unprivileged user.
-command_args="-f -r -R 5 -P ${pidfile} -S -T ${name} -u ${cbsdweb_user} ${cbsdweb_bin} -config ${cbsdweb_config} serve"
+# daemon(8) supervises and restarts the server. rc.subr starts it as
+# ${cbsdweb_user} (via su), so daemon and the server both run unprivileged;
+# daemon's own -u flag fails under -r (initgroups: Operation not permitted).
+command_args="-f -r -R 5 -P ${pidfile} -S -T ${name} ${cbsdweb_bin} -config ${cbsdweb_config} serve"
 
 start_precmd="${name}_prestart"
 
