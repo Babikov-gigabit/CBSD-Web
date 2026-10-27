@@ -29,7 +29,8 @@ if [ -f "${here}/../go.mod" ]; then
 	command -v go >/dev/null 2>&1 || pkg install -y go
 	rev=$(cd "${here}/.." && git rev-parse --short HEAD 2>/dev/null || true)
 	ldver=""
-	[ -n "$rev" ] && ldver="-X main.version=0.2.0-${rev}"
+	ver=$(sed -n 's/^var version = "\(.*\)"/\1/p' "${here}/../cmd/cbsd-web/main.go")
+	[ -n "$rev" ] && ldver="-X main.version=${ver}-${rev}"
 	(cd "${here}/.." && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w ${ldver}" -o cbsd-web ./cmd/cbsd-web) || die "build failed"
 	src="${here}/../cbsd-web"
 else

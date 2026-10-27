@@ -1,4 +1,4 @@
-VERSION ?= 0.1.0
+VERSION ?= $(shell sed -n 's/^var version = "\(.*\)"/\1/p' cmd/cbsd-web/main.go)
 LDFLAGS  = -s -w -X main.version=$(VERSION)
 GO      ?= go
 
