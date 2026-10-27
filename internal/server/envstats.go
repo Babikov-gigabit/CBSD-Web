@@ -83,7 +83,7 @@ func (s *Server) handleVNCInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	rc := sessionFrom(r)
 	res := map[string]any{"port": e.VNCPort, "bind": e.VNCBind, "resolution": e.VNCRes, "has_password": e.HasVNCPass,
-		"running": e.Status == 1, "console": s.terminalAllowed(rc.sess.Role)}
+		"running": e.Status == 1, "console": s.terminalAllowed(rc.sess.Role), "auto": e.VNCAuto, "off": e.VNCOff}
 	if s.terminalAllowed(rc.sess.Role) {
 		res["password"] = e.VNCPassword
 		s.audit.Log(audit.Entry{User: rc.sess.User, IP: rc.ip, Event: "vnc.info", Target: e.Name})

@@ -64,7 +64,7 @@ func (c *client) login(user, pw string) int {
 	return resp.StatusCode
 }
 
-func setup(t *testing.T) (*httptest.Server, func(string) *client) {
+func setup(t *testing.T, mods ...func(*config.Config)) (*httptest.Server, func(string) *client) {
 	t.Helper()
 	auth.BcryptCost = 4 // bcrypt.MinCost: keeps tests fast
 	dir := t.TempDir()
@@ -85,6 +85,9 @@ func setup(t *testing.T) (*httptest.Server, func(string) *client) {
 	cfg.AuditLog = filepath.Join(dir, "audit.log")
 	cfg.CBSDCommand = []string{"/bin/sh", fake}
 	cfg.InitenvCommand = []string{"/bin/sh", fake, "initenv"}
+	for _, m := range mods {
+		m(cfg)
+	}
 	users, err := auth.OpenStore(cfg.UsersFile)
 	if err != nil {
 		t.Fatal(err)

@@ -69,8 +69,8 @@ func (s *Server) terminalAllowed(role auth.Role) bool {
 	return false
 }
 
-// handleTerminal opens 'cbsd jlogin' for a running jail on a pty and bridges
-// it to a WebSocket. Browsers cannot set headers on WebSocket requests, so the
+// handleTerminal opens 'cbsd jlogin' for a running jail (or 'blogin'/'xlogin',
+// the serial console of a VM) on a pty and bridges it to a WebSocket. Browsers cannot set headers on WebSocket requests, so the
 // CSRF token comes in the query string and Origin must match the host.
 func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	rc := sessionFrom(r)
@@ -83,12 +83,22 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "CSRF-проверка не пройдена")
 		return
 	}
-	e := s.loadJail(w, r)
+	e := s.loadEnv(w, r)
 	if e == nil {
 		return
 	}
+	login := map[string][]string{
+		"jail": {"jlogin", "jname=" + e.Name},
+		// remote=1 stops CBSD from offering to log in on another node.
+		"bhyve": {"blogin", "jname=" + e.Name, "remote=1"},
+		"xen":   {"xlogin", "jname=" + e.Name, "remote=1"},
+	}[e.Emulator]
+	if login == nil {
+		writeErr(w, http.StatusBadRequest, "терминал недоступен для "+e.Emulator)
+		return
+	}
 	if e.Status != 1 {
-		writeErr(w, http.StatusConflict, "клетка не запущена")
+		writeErr(w, http.StatusConflict, "окружение не запущено")
 		return
 	}
 	cols, _ := strconv.Atoi(r.URL.Query().Get("cols"))
@@ -118,7 +128,7 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(64 << 10)
 
 	base := s.cfg.CBSDCommand
-	args := append(append([]string{}, base[1:]...), "jlogin", "jname="+e.Name)
+	args := append(append([]string{}, base[1:]...), login...)
 	cmd := exec.Command(base[0], args...)
 	cmd.Env = []string{
 		"PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin",
@@ -128,7 +138,7 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 	if err != nil {
-		conn.Close(websocket.StatusInternalError, "не удалось запустить jlogin")
+		conn.Close(websocket.StatusInternalError, "не удалось запустить "+login[0])
 		return
 	}
 	started := time.Now()
@@ -207,6 +217,7 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 
 	<-ctx.Done()
 	// Closing the master hangs up the session; jlogin and the shell get SIGHUP.
+	// For a VM only the tmux client goes away; the VM keeps running.
 	ptmx.Close()
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()

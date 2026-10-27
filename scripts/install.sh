@@ -40,9 +40,11 @@ else
 	[ -n "$src" ] || die "cbsd-web binary not found next to the installer"
 fi
 
-say "installing packages: cbsd sudo"
+say "installing packages: cbsd sudo tmux"
 pkg info -e cbsd || pkg install -y cbsd
 pkg info -e sudo || pkg install -y sudo
+# bstart refuses to start bhyve VMs without tmux.
+pkg info -e tmux || pkg install -y tmux
 
 say "creating user ${USER}"
 if ! pw usershow "${USER}" >/dev/null 2>&1; then
@@ -61,6 +63,14 @@ if [ ! -f "${ETC}/cbsd-web.conf" ]; then
 	sed "s#\"listen\": \"0.0.0.0:8443\"#\"listen\": \"${LISTEN}\"#" "${here}/../deploy/cbsd-web.conf.sample" > "${ETC}/cbsd-web.conf"
 	chmod 0644 "${ETC}/cbsd-web.conf"
 fi
+# ISO images uploaded from the web UI: <workdir>/src/iso/upload, owned by the
+# daemon so it can write them without sudo (bhyve reads them as root).
+workdir=$(sed -n 's/^[[:space:]]*"workdir":[[:space:]]*"\([^"]*\)".*/\1/p' "${ETC}/cbsd-web.conf")
+[ -n "$workdir" ] || workdir=$(sysrc -n cbsd_workdir 2>/dev/null || echo /usr/jails)
+if [ -f "${workdir}/var/db/local.sqlite" ]; then
+	[ -d "${workdir}/src/iso" ] || mkdir -p "${workdir}/src/iso"
+	install -d -m 0755 -o "$USER" -g "$USER" "${workdir}/src/iso/upload"
+fi
 install -d -m 0750 ${PREFIX}/etc/sudoers.d
 install -m 0440 -o root -g wheel "${here}/../deploy/sudoers" ${PREFIX}/etc/sudoers.d/cbsd-web
 visudo -c -f ${PREFIX}/etc/sudoers.d/cbsd-web >/dev/null || { rm -f ${PREFIX}/etc/sudoers.d/cbsd-web; die "sudoers syntax check failed"; }
@@ -78,5 +88,6 @@ service cbsdweb restart
 ip=$(ifconfig | awk '/inet / && $2 != "127.0.0.1" {print $2; exit}')
 say "done: https://${ip:-<host>}:${LISTEN##*:}/"
 if [ ! -f "$(sysrc -n cbsd_workdir 2>/dev/null || echo /usr/jails)/var/db/local.sqlite" ]; then
-	echo "    CBSD is not initialised yet: open the UI -> «Установка и настройка» and run the wizard."
+	echo "    CBSD is not initialised yet: open the UI -> «Установка и настройка» and run the wizard,"
+	echo "    then run this installer again so it creates the directory for uploaded ISO images."
 fi

@@ -4,12 +4,15 @@
 cmd="$1"
 case "$cmd" in
 version) echo "14.3.0 (fake)"; exit 0 ;;
-jlogin)
-	# Interactive stand-in for a jail shell (dev and tests only).
-	echo "fake jlogin: $2"
+jlogin|blogin|xlogin)
+	# Interactive stand-in for a jail shell or VM console (dev and tests only).
+	echo "fake $cmd: $2 $3"
 	PS1='root@fake:~ # ' exec /bin/sh -i ;;
 jrctl)
 	case "$*" in *mode=show*) printf 'memoryuse=412M\nmaxproc=37\nopenfiles=310\npcpu=3\n'; exit 0 ;; esac ;;
+media)
+	case "$*" in *name=web-fail*) echo "Name already exist for: /x" ; exit 1 ;; esac
+	echo "fake media: $*"; exit 0 ;;
 jsnapshot|bsnapshot)
 	case "$*" in *mode=list*)
 		j=$(printf '%s\n' "$@" | sed -n 's/^jname=//p')

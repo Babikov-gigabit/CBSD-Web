@@ -248,3 +248,7 @@ code.mono { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; wo
 .snap-detail { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }
 .pick tbody tr { cursor: pointer; }
 .nowrap { white-space: nowrap; }
+.checks .mark.warn { color: var(--warn); }
+.install-steps { margin: 0; padding-left: 0; list-style: none; display: grid; gap: 10px; }
+.install-steps li { padding: 8px 10px; border-radius: 6px; background: var(--panel-2); }
+.install-steps li.done b { color: var(--ok); }

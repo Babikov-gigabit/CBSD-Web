@@ -255,7 +255,8 @@ func (s *Server) submitSteps(w http.ResponseWriter, r *http.Request, title, targ
 			defer func() { onDone(err) }()
 		}
 		step := func(ctx context.Context, args []string) error {
-			fmt.Fprintf(out, "$ cbsd %s\n", strings.Join(args, " "))
+			// Job logs are visible to every role, so passwords are masked.
+			fmt.Fprintf(out, "$ cbsd %s\n", redactLog(strings.Join(args, " ")))
 			st := &ansiStripper{w: out}
 			err := s.runner.Stream(ctx, st, args...)
 			st.Flush()
@@ -532,6 +533,9 @@ func (s *Server) handleJailCreate(w http.ResponseWriter, r *http.Request) {
 type vmCreateReq struct {
 	cbsd.VMCreate
 	PubKey string `json:"ci_user_pubkey"`
+	// Installation ISO: a CBSD media name from GET /api/isos, instead of the
+	// one the profile would download.
+	ISO string `json:"iso"`
 }
 
 func (s *Server) handleVMCreate(w http.ResponseWriter, r *http.Request) {
@@ -555,6 +559,21 @@ func (s *Server) handleVMCreate(w http.ResponseWriter, r *http.Request) {
 	if ex, _ := s.db.Env(r.Context(), req.Name); ex != nil {
 		writeFieldErr(w, &cbsd.FieldError{Field: "jname", Msg: "имя уже занято"})
 		return
+	}
+	isoRel := ""
+	if req.ISO != "" {
+		for _, p := range s.profiles.For(emu) {
+			if p.OSType == req.OSType && p.Name == req.Profile && p.Cloud {
+				writeFieldErr(w, &cbsd.FieldError{Field: "iso", Msg: "облачный профиль ставится без ISO"})
+				return
+			}
+		}
+		rel, err := s.isoForVM(r.Context(), req.ISO)
+		if err != nil {
+			writeFieldErr(w, &cbsd.FieldError{Field: "iso", Msg: err.Error()})
+			return
+		}
+		isoRel = rel
 	}
 	// The key is passed to CBSD as a file path, never inline, so it cannot
 	// break CBSD's argument parsing.
@@ -581,6 +600,11 @@ func (s *Server) handleVMCreate(w http.ResponseWriter, r *http.Request) {
 		cleanup()
 		writeFieldErr(w, err)
 		return
+	}
+	if isoRel != "" {
+		// bcreate registers the ISO for the new VM (path is relative to
+		// <workdir>/src/iso) and bstart boots from it via vm_iso_path.
+		args = append(args, "register_iso_as="+req.ISO, "register_iso_name="+isoRel, "vm_iso_path="+req.ISO)
 	}
 	s.submit(w, r, "Создание ВМ "+req.Name, req.Name, args, cleanup)
 }
@@ -740,6 +764,7 @@ type check struct {
 	ID     string `json:"id"`
 	Title  string `json:"title"`
 	OK     bool   `json:"ok"`
+	Warn   bool   `json:"warn,omitempty"` // a failed check that is only a notice
 	Detail string `json:"detail,omitempty"`
 	Hint   string `json:"hint,omitempty"`
 }
@@ -779,7 +804,20 @@ func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 	add(check{ID: "rcconf", Title: "Автозапуск cbsdd", OK: enabled, Hint: "sysrc cbsdd_enable=YES (initenv делает это сам)."})
 
 	hi := s.sys.Get(ctx)
-	add(check{ID: "vmm", Title: "Модуль vmm (bhyve)", OK: hi.VMMLoaded, Hint: "kldload vmm; sysrc kld_list+=vmm — нужно только для bhyve."})
+	vmmHint := "kldload vmm; sysrc kld_list+=vmm — нужно только для bhyve."
+	if hi.VMGuest != "" && hi.VMGuest != "none" {
+		vmmHint = "Сервер сам работает в виртуальной машине (" + hi.VMGuest + "), и ей не передана аппаратная виртуализация, поэтому vmm не загружается. " +
+			"Выключите эту ВМ и включите вложенную виртуализацию: в VirtualBox — VBoxManage modifyvm \"<имя>\" --nested-hw-virt on " +
+			"(или «Включить Nested VT-x/AMD-V» в настройках процессора), в VMware — «Virtualize Intel VT-x/EPT», в Proxmox/KVM — тип CPU host. Затем kldload vmm."
+	}
+	add(check{ID: "vmm", Title: "Модуль vmm (bhyve)", OK: hi.VMMLoaded, Hint: vmmHint})
+	_, terr := os.Stat("/usr/local/bin/tmux")
+	add(check{ID: "tmux", Title: "tmux (нужен для запуска ВМ bhyve)", OK: terr == nil, Detail: "/usr/local/bin/tmux",
+		Hint: "pkg install -y tmux (install.sh ставит его сам). Без tmux cbsd bstart не запускает ВМ."})
+	if hi.VMGuest != "" && hi.VMGuest != "none" {
+		add(check{ID: "vm_guest", Title: "Сервер работает на «железе»", OK: false, Warn: true, Detail: "виртуальная машина: " + hi.VMGuest,
+			Hint: "bhyve внутри виртуальной машины работает только со вложенной виртуализацией и медленнее. Для проверки подойдёт, для работы лучше физический сервер."})
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"checks": checks, "workdir": s.cfg.Workdir, "initialized": s.db.Exists("local")})
 }
@@ -1020,8 +1058,16 @@ func (s *Server) loadJail(w http.ResponseWriter, r *http.Request) *cbsd.Env {
 }
 
 func (s *Server) handleJailConfig(w http.ResponseWriter, r *http.Request) {
-	e := s.loadJail(w, r)
+	e := s.loadEnv(w, r)
 	if e == nil {
+		return
+	}
+	if e.Emulator == "bhyve" || e.Emulator == "xen" {
+		s.handleVMConfig(w, r, e)
+		return
+	}
+	if e.Emulator != "jail" {
+		writeErr(w, http.StatusBadRequest, "настройки недоступны для "+e.Emulator)
 		return
 	}
 	vals, err := s.db.JailConfig(r.Context(), e.Name)
@@ -1036,8 +1082,16 @@ func (s *Server) handleJailConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleJailConfigSet(w http.ResponseWriter, r *http.Request) {
-	e := s.loadJail(w, r)
+	e := s.loadEnv(w, r)
 	if e == nil {
+		return
+	}
+	if e.Emulator == "bhyve" || e.Emulator == "xen" {
+		s.handleVMConfigSet(w, r, e)
+		return
+	}
+	if e.Emulator != "jail" {
+		writeErr(w, http.StatusBadRequest, "настройки недоступны для "+e.Emulator)
 		return
 	}
 	var u cbsd.JailConfigUpdate
@@ -1104,4 +1158,43 @@ func (s *Server) handleJailLimitsSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.submit(w, r, "Лимиты "+e.Name, e.Name, args, nil)
+}
+
+func (s *Server) handleVMConfig(w http.ResponseWriter, r *http.Request, e *cbsd.Env) {
+	vals, secret, err := s.db.VMConfig(r.Context(), e.Emulator, e.Name)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, dbErrorMessage(err))
+		return
+	}
+	cmd := "bset"
+	if e.Emulator == "xen" {
+		cmd = "xset"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"groups": cbsd.VMParamGroups, "params": cbsd.VMParamsFor(e.Emulator), "values": vals, "secret_set": secret,
+		"running": e.Status == 1, "busy_job": s.jobs.Busy()[e.Name], "command": cmd, "vm": true,
+	})
+}
+
+func (s *Server) handleVMConfigSet(w http.ResponseWriter, r *http.Request, e *cbsd.Env) {
+	var u cbsd.VMConfigUpdate
+	if err := readJSON(r, &u); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	args, err := u.Args(e.Emulator, e.Name, sessionFrom(r).sess.Role.Allows(auth.RoleAdmin))
+	if err != nil {
+		writeFieldErr(w, err)
+		return
+	}
+	steps := [][]string{args}
+	if u.Restart && e.Status == 1 {
+		// bset only stores the values; a running VM reads them on start.
+		stop, start := "bstop", "bstart"
+		if e.Emulator == "xen" {
+			stop, start = "xstop", "xstart"
+		}
+		steps = append(steps, []string{stop, "jname=" + e.Name}, []string{start, "jname=" + e.Name})
+	}
+	s.submitSteps(w, r, "Настройки "+e.Name, e.Name, steps, nil, nil)
 }

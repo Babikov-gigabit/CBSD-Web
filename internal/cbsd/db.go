@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -229,6 +230,8 @@ type Env struct {
 	OSType    string `json:"vm_os_type,omitempty"`
 	Profile   string `json:"vm_os_profile,omitempty"`
 	VNCPort   int64  `json:"vnc_port,omitempty"`
+	VNCAuto   bool   `json:"vnc_auto,omitempty"` // vm_vnc_port=0: CBSD picks a port at start
+	VNCOff    bool   `json:"vnc_off,omitempty"`  // vm_vnc_port=1
 	VNCBind   string `json:"vnc_bind,omitempty"`
 	VNCRes    string `json:"vnc_resolution,omitempty"`
 	// The password itself is only served by the console endpoint.
@@ -236,6 +239,12 @@ type Env struct {
 	HasVNCPass  bool   `json:"vnc_has_password,omitempty"`
 	Maint       string `json:"maintenance,omitempty"`
 }
+
+// Str returns column k as text.
+func (r Row) Str(k string) string { return str(r[k]) }
+
+// Num returns column k as a number.
+func (r Row) Num(k string) int64 { return num(r[k]) }
 
 func str(v any) string {
 	switch t := v.(type) {
@@ -345,6 +354,12 @@ func (d *DB) Envs(ctx context.Context, emulator string) ([]Env, error) {
 			e.OSType = clean(r["vm_os_type"])
 			e.Profile = clean(r["vm_os_profile"])
 			e.VNCPort = num(r["vm_vnc_port"])
+			switch e.VNCPort {
+			case 0:
+				e.VNCAuto, e.VNCPort = true, d.autoVNCPort(e.Name)
+			case 1:
+				e.VNCOff, e.VNCPort = true, 0
+			}
 			e.VNCBind = firstClean(r["bhyve_vnc_tcp_bind"], r["bhyve_vnc_bind"], r["xen_vnc_tcp_bind"])
 			e.VNCRes = firstClean(r["bhyve_vnc_resolution"], r["xen_vnc_resolution"])
 			e.VNCPassword = clean(r["vnc_password"])
@@ -353,6 +368,27 @@ func (d *DB) Envs(ctx context.Context, emulator string) ([]Env, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// autoVNCPort returns the port CBSD chose at the last start of a VM with
+// vm_vnc_port=0; bstart writes it to jails-system/NAME/vnc_port. 0 if unknown.
+func (d *DB) autoVNCPort(name string) int64 {
+	if !ValidExistingName(name) {
+		return 0
+	}
+	b, err := os.ReadFile(filepath.Join(d.workdir, "jails-system", name, "vnc_port"))
+	if err != nil || len(b) > 32 {
+		return 0
+	}
+	f := strings.Fields(string(b))
+	if len(f) == 0 {
+		return 0
+	}
+	p, err := strconv.ParseInt(f[0], 10, 64)
+	if err != nil || p < 2 || p > 65535 {
+		return 0
+	}
+	return p
 }
 
 // Env returns one environment by name.
@@ -374,9 +410,14 @@ func (d *DB) Images(ctx context.Context) ([]Row, error) {
 	return d.selectAvailable(ctx, "local", "images", []string{"name", "path", "emulator", "size", "created", "sources", "md5"}, "")
 }
 
-// Media lists registered ISO/disk media (local::media).
+// Media lists registered ISO/disk media. Current CBSD keeps them in
+// storage_media::media; older releases used local::media.
 func (d *DB) Media(ctx context.Context) ([]Row, error) {
-	return d.selectAvailable(ctx, "local", "media", []string{"name", "path", "type", "jname", "size"}, "")
+	db := "local"
+	if d.Exists("storage_media") {
+		db = "storage_media"
+	}
+	return d.selectAvailable(ctx, db, "media", []string{"name", "path", "type", "jname", "size"}, "")
 }
 
 // Bases lists installed FreeBSD bases (local::bsdbase).

@@ -242,7 +242,7 @@ const routes = [
   [/^jails$/, () => pageEnvs('jail'), 'jails'],
   [/^vms$/, () => pageEnvs('bhyve'), 'vms'],
   [/^xen$/, () => pageEnvs('xen'), 'xen'],
-  [/^env\/([A-Za-z0-9_.-]+)(?:\/(config|limits))?$/, (m) => pageEnv(m[1], m[2] || ''), null],
+  [/^env\/([A-Za-z0-9_.-]+)(?:\/(config|limits|logs))?$/, (m) => pageEnv(m[1], m[2] || ''), null],
   [/^env\/([A-Za-z0-9_.-]+)\/terminal$/, (m) => pageTerminal(m[1]), null],
   [/^env\/([A-Za-z0-9_.-]+)\/vnc$/, (m) => pageVNC(m[1]), null],
   [/^images$/, pageImages, 'images'],
@@ -489,7 +489,7 @@ async function pageEnv(name, tab) {
     const { env: e, busy_job: busyJob } = await api('GET', '/api/envs/' + enc);
     const back = { jail: '#/jails', bhyve: '#/vms', xen: '#/xen' }[e.emulator] || '#/';
     const isJail = e.emulator === 'jail';
-    if (!isJail) tab = '';
+    if (!isJail && tab === 'limits') tab = '';
     const tools = [];
     if (can('operator')) {
       if (!isJail) tools.push(h('button', { type: 'button', onclick: () => editEnv(e) }, 'Настройки'));
@@ -504,13 +504,20 @@ async function pageEnv(name, tab) {
       h('div', { class: 'row', style: 'margin-bottom:16px' }, statusPill(e, busyJob), envButtons(e, busyJob, false), h('span', { style: 'flex:1' }), tools),
       e.maintenance ? h('div', { class: 'banner warn' }, 'Режим обслуживания: ', e.maintenance) : null,
     ];
+    const t = (key, title) => h('a', { href: '#/env/' + enc + (key ? '/' + key : ''), class: tab === key ? 'active' : '' }, title);
+    const logsTab = can('operator') ? t('logs', 'Журналы') : null;
     if (isJail) {
-      const t = (key, title) => h('a', { href: '#/env/' + enc + (key ? '/' + key : ''), class: tab === key ? 'active' : '' }, title);
-      head.push(h('nav', { class: 'tabs' }, t('', 'Обзор'), t('config', 'Конфигурация'), t('limits', 'Лимиты ресурсов'),
+      head.push(h('nav', { class: 'tabs' }, t('', 'Обзор'), t('config', 'Конфигурация'), t('limits', 'Лимиты ресурсов'), logsTab,
         state.terminal ? h('a', { href: '#/env/' + enc + '/terminal' }, '>_ Терминал') : null));
+    } else {
+      const off = e.status === 1 ? '' : 'muted', why = e.status === 1 ? '' : 'Машина не запущена';
+      const consoleTab = state.terminal ? h('a', { href: '#/env/' + enc + '/vnc', class: off, title: why || 'Экран машины через VNC' }, '🖥 Консоль VNC') : null;
+      const termTab = state.terminal ? h('a', { href: '#/env/' + enc + '/terminal', class: off, title: why || 'Текстовая консоль (последовательный порт)' }, '>_ Терминал') : null;
+      head.push(h('nav', { class: 'tabs' }, t('', 'Обзор'), t('config', 'Конфигурация'), consoleTab, termTab, logsTab));
     }
-    if (tab === 'config') return fill(main, head, await jailConfigTab(e));
+    if (tab === 'config') return fill(main, head, await configTab(e));
     if (tab === 'limits') return fill(main, head, await jailLimitsTab(e));
+    if (tab === 'logs') return fill(main, head, await envLogsTab(e));
     fill(main, head, envOverview(e, keep));
   };
   await render();
@@ -529,7 +536,25 @@ function saveBar(onSave, onReset, extra) {
   return { bar, set(n) { bar.hidden = n === 0; count.textContent = 'Изменено: ' + n; } };
 }
 
-async function jailConfigTab(e) {
+async function envLogsTab(e) {
+  const { logs } = await api('GET', '/api/envs/' + encodeURIComponent(e.jname) + '/logs');
+  const kindPill = (l) => l.kind === 'job' ? jobPill(l.state) : h('span', { class: 'pill off' }, l.kind === 'system' ? 'система' : 'CBSD');
+  const cards = logs.map((l) => {
+    const pre = l.error ? null : h('pre', { class: 'log short' }, l.text || '(пусто)');
+    if (pre) setTimeout(() => { pre.scrollTop = pre.scrollHeight; });
+    return h('div', { class: 'card mt' },
+      h('div', { class: 'row', style: 'margin-bottom:8px' }, h('h2', { style: 'margin:0' }, l.title), kindPill(l), h('span', { style: 'flex:1' }),
+        h('span', { class: 'muted small' }, [l.modified ? fmtTime(l.modified) : null, l.size ? fmtBytes(l.size) : null, l.cut ? 'показан конец' : null].filter(Boolean).join(' · '))),
+      l.path ? h('div', { class: 'mono muted small', style: 'word-break:break-all;margin-bottom:8px' }, l.path) : null,
+      l.error ? h('div', { class: 'banner warn' }, l.error) : pre);
+  });
+  return h('div', null,
+    h('div', { class: 'row' }, h('p', { class: 'muted', style: 'margin:0' }, 'Журналы CBSD (bstart.log — команда bhyve и её вывод), строки системного журнала и вывод последних задач. Пароли скрыты.'),
+      h('span', { style: 'flex:1' }), h('button', { type: 'button', onclick: () => refreshCurrent() }, 'Обновить')),
+    cards.length ? cards : h('div', { class: 'card mt empty' }, 'Журналов пока нет: окружение ещё не запускалось.'));
+}
+
+async function configTab(e) {
   const url = '/api/envs/' + encodeURIComponent(e.jname) + '/config';
   const r = await api('GET', url);
   const orig = r.values || {};
@@ -544,7 +569,8 @@ async function jailConfigTab(e) {
     return out;
   };
   const restartBox = h('input', { type: 'checkbox', id: 'cfg_restart' });
-  const restartWrap = h('label', { class: 'row small', for: 'cfg_restart', hidden: true }, restartBox, 'Перезапустить клетку, чтобы применить');
+  const what = r.vm ? 'ВМ' : 'клетку';
+  const restartWrap = h('label', { class: 'row small', for: 'cfg_restart', hidden: true }, restartBox, 'Перезапустить ' + what + ', чтобы применить');
   const update = () => {
     const d = diff();
     for (const c of Object.values(ctrls)) c.wrap.classList.toggle('changed', c.p.name in d);
@@ -579,8 +605,11 @@ async function jailConfigTab(e) {
       const opts = p.options.includes(v) ? p.options : [v, ...p.options];
       input = h('select', { id, disabled }, opts.map((o) => h('option', { value: o }, o)));
       input.value = v;
+    } else if (p.secret) {
+      input = h('input', { id, type: 'password', value: '', disabled, autocomplete: 'new-password',
+        placeholder: (r.secret_set || {})[p.name] ? 'задан; введите новый, чтобы сменить' : 'не задан' });
     } else input = h('input', { id, type: p.kind === 'int' ? 'number' : 'text', min: p.kind === 'int' ? p.min : null, max: p.kind === 'int' ? p.max : null, value: v, disabled, autocomplete: 'off', spellcheck: 'false' });
-    const marks = [p.live ? null : h('span', { class: 'mark', title: 'На запущенной клетке применяется перезапуском' }, '↻'),
+    const marks = [p.live ? null : h('span', { class: 'mark', title: r.vm ? 'Применяется при следующем запуске ВМ' : 'На запущенной клетке применяется перезапуском' }, '↻'),
       p.admin ? h('span', { class: 'mark', title: 'Меняет только администратор' }, '🔒') : null];
     const label = h('label', { for: id }, p.label, ' ', marks);
     const meta = h('div', { class: 'help' }, h('span', { class: 'mono' }, p.name), p.help ? ' · ' + p.help : '');
@@ -604,8 +633,8 @@ async function jailConfigTab(e) {
   } });
   const box = h('div', { oninput: update, onchange: update },
     h('div', { class: 'row', style: 'margin-bottom:12px' }, search,
-      h('span', { class: 'muted small' }, '↻ — на запущенной клетке нужен перезапуск, 🔒 — только администратор. Значения пишутся через cbsd jset.')),
-    r.busy_job ? h('div', { class: 'banner warn' }, 'Сейчас над клеткой выполняется задача; изменения можно будет сохранить после неё.') : null,
+      h('span', { class: 'muted small' }, (r.vm ? '↻ — применяется при следующем запуске ВМ' : '↻ — на запущенной клетке нужен перезапуск') + ', 🔒 — только администратор. Значения пишутся через cbsd ' + (r.command || 'jset') + '.')),
+    r.busy_job ? h('div', { class: 'banner warn' }, 'Сейчас над ' + (r.vm ? 'ВМ' : 'клеткой') + ' выполняется задача; изменения можно будет сохранить после неё.') : null,
     h('div', { class: 'pgroups' }, cards), bar.bar);
   return box;
 }
@@ -651,6 +680,12 @@ async function jailLimitsTab(e) {
 }
 
 // ---------- VNC console ----------
+function vncMissing(off, auto) {
+  if (off) return 'VNC отключён (порт 1). Задайте порт 0 (автоматически) или конкретный порт на вкладке «Конфигурация».';
+  if (auto) return 'Порт VNC выбирается автоматически при запуске машины. Запустите её, и порт появится здесь.';
+  return 'VNC для этой машины не назначен.';
+}
+
 async function pageVNC(name) {
   const main = $('#main');
   const enc = encodeURIComponent(name);
@@ -658,7 +693,7 @@ async function pageVNC(name) {
   const info = await api('GET', '/api/envs/' + enc + '/vnc');
   if (!info.console || !info.port || !info.running) {
     const why = !info.console ? 'Консоль доступна администратору (параметр terminal_role в конфиге).'
-      : !info.port ? 'VNC для этой машины не назначен.' : 'Машина не запущена.';
+      : !info.port ? vncMissing(info.off, info.auto) : 'Машина не запущена.';
     return fill(main, pageHead('Консоль: ' + name, backBtn), h('div', { class: 'banner warn' }, why));
   }
   const { default: RFB } = await import('/vendor/novnc/core/rfb.js');
@@ -722,12 +757,13 @@ async function pageTerminal(name) {
   const main = $('#main');
   const enc = encodeURIComponent(name);
   const { env: e } = await api('GET', '/api/envs/' + enc);
-  const backBtn = h('a', { class: 'btn', href: '#/env/' + enc }, '← К клетке');
-  if (!state.terminal || e.emulator !== 'jail' || e.status !== 1) {
+  const isVM = e.emulator === 'bhyve' || e.emulator === 'xen';
+  const backBtn = h('a', { class: 'btn', href: '#/env/' + enc }, isVM ? '← К машине' : '← К клетке');
+  if (!state.terminal || !(e.emulator === 'jail' || isVM) || e.status !== 1) {
     const why = !state.terminal ? 'Терминал доступен администратору (параметр terminal_role в конфиге).'
-      : e.emulator !== 'jail' ? 'Терминал доступен только для клеток.' : 'Клетка не запущена.';
+      : !(e.emulator === 'jail' || isVM) ? 'Терминал недоступен для этого типа окружения.' : isVM ? 'Машина не запущена.' : 'Клетка не запущена.';
     return fill(main, pageHead('Терминал: ' + name, backBtn), h('div', { class: 'banner warn' }, why),
-      e.emulator === 'jail' && e.status !== 1 && can('operator') ? envButtons(e, null, false) : null);
+      e.status !== 1 && can('operator') ? envButtons(e, null, false) : null);
   }
   await loadXterm();
   const pill = h('span', { class: 'pill off' }, 'подключение…');
@@ -736,8 +772,11 @@ async function pageTerminal(name) {
   let ws = null;
   const reconnect = h('button', { type: 'button', hidden: true, onclick: () => connect() }, 'Переподключить');
   fill(main, pageHead('Терминал: ' + name, pill, reconnect, backBtn), box,
-    h('div', { class: 'muted small mt' }, 'Вы входите как root через cbsd jlogin. Сеанс закрывается через ',
-      'полчаса бездействия; если на хосте установлен tmux, CBSD сохраняет сеанс и при следующем входе подключится к нему.'));
+    isVM ? h('div', { class: 'muted small mt' }, 'Последовательная консоль (COM1) через cbsd ' + (e.emulator === 'xen' ? 'xlogin' : 'blogin') + '. ',
+      'Работает, если гость выводит консоль на последовательный порт (обычно Linux и FreeBSD; графический установщик виден только в «Консоли VNC»). ',
+      'Если экран пуст, нажмите Enter. Закрытие вкладки не останавливает машину.')
+      : h('div', { class: 'muted small mt' }, 'Вы входите как root через cbsd jlogin. Сеанс закрывается через ',
+        'полчаса бездействия; если на хосте установлен tmux, CBSD сохраняет сеанс и при следующем входе подключится к нему.'));
   const term = new window.Terminal({ cursorBlink: true, fontSize: 14, scrollback: 5000, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
     theme: { background: '#0d1117', foreground: '#d1d7e0' } });
   const fit = new window.FitAddon.FitAddon();
@@ -785,13 +824,70 @@ function envOverview(e, keep) {
   keep.stats.update(e);
   if ((e.emulator === 'jail' || e.emulator === 'bhyve') && !keep.snaps) keep.snaps = snapshotCard(e);
   if (keep.snaps && keep.snaps.dirty) keep.snaps.load();
-  const vnc = e.emulator === 'bhyve' || e.emulator === 'xen' ? vncCard(e, keep) : null;
+  const isVM = e.emulator === 'bhyve' || e.emulator === 'xen';
+  const vnc = isVM ? vncCard(e, keep) : null;
+  if (isVM && !keep.install) keep.install = installCard(e);
+  if (keep.install) keep.install.update(e);
   return [
+    keep.install ? keep.install.el : null,
     h('div', { class: 'grid cols-2' },
       h('div', { class: 'card' }, h('h2', null, 'Параметры'), h('dl', { class: 'kv' }, info.map(([k, v]) => [h('dt', null, k), h('dd', null, v)]))),
       vnc, keep.stats.el),
     keep.snaps ? keep.snaps.el : null,
   ];
+}
+
+// installCard walks through installing an OS from an ISO: attach the ISO,
+// boot from it and use the VNC console, then switch to the disk.
+function installCard(e) {
+  const enc = encodeURIComponent(e.jname);
+  const el = h('div', { class: 'card', style: 'margin-bottom:14px' });
+  let status = null, loading = false;
+  const act = async (body) => {
+    try { await runAction('POST', '/api/envs/' + enc + '/media', body); } catch (err) { fail(err); }
+    status = null; // reload when the page refreshes after the job
+  };
+  const load = async () => {
+    if (loading) return;
+    loading = true;
+    try { render(await api('GET', '/api/envs/' + enc + '/media')); } catch (err) { fill(el, h('h2', null, 'Установка ОС'), h('div', { class: 'banner warn' }, err.message)); } finally { loading = false; }
+  };
+  const render = (m) => {
+    const iso = m.attached.find((i) => !i.missing) || m.attached[0];
+    const ready = !!iso && !iso.missing;
+    const fromCD = m.boot === 'cd';
+    const op = can('operator');
+    const step = (n, done, title, ...body) => h('li', { class: done ? 'done' : '' }, h('b', null, (done ? '✓ ' : n + '. ') + title), h('div', { class: 'muted small' }, body));
+    const sel = h('select', null, m.available.map((i) => h('option', { value: i.media }, (i.file || i.media) + ' · ' + fmtBytes(i.size))));
+    fill(el,
+      h('div', { class: 'row', style: 'margin-bottom:8px' }, h('h2', { style: 'margin:0' }, 'Установка ОС'),
+        h('span', { class: 'pill ' + (fromCD ? 'run' : 'off') }, fromCD ? 'загрузка с ISO' : 'загрузка с диска'),
+        iso ? h('span', { class: 'pill ' + (ready ? 'on' : 'warn') }, 'ISO: ' + (iso.file || iso.media)) : h('span', { class: 'pill off' }, 'ISO не подключён')),
+      h('ol', { class: 'install-steps' },
+        step(1, ready, 'Подключите установочный ISO',
+          iso && !ready ? h('div', { class: 'banner warn' }, 'Файл образа ', h('span', { class: 'mono' }, iso.media), ' не найден (', h('span', { class: 'mono' }, iso.path), '). CBSD в этом случае пытается скачать ISO профиля. Выберите другой образ ниже и нажмите «Заменить» (новый можно загрузить в «Образы и ISO»).') : null,
+          iso ? ['Подключён ', h('span', { class: 'mono' }, iso.file || iso.media), '. ',
+            op ? h('button', { class: 'sm', type: 'button', onclick: () => act({ action: 'eject' }) }, 'Извлечь') : null] : null,
+          op && m.available.length ? h('div', { class: 'row', style: 'margin-top:6px' }, sel,
+            h('button', { class: iso ? 'sm' : 'sm primary', type: 'button', onclick: () => act({ action: 'attach', iso: sel.value }) }, iso ? 'Заменить' : 'Подключить')) : null,
+          !m.available.length && !iso ? ['Загрузите образ в разделе ', h('a', { href: '#/images' }, '«Образы и ISO»'), '.'] : null),
+        step(2, fromCD && m.running, 'Запустите машину с ISO',
+          'Машина загрузится с ISO, даже если на диске уже что-то есть. ',
+          op ? h('button', { class: 'sm primary', type: 'button', disabled: !ready, title: ready ? '' : 'Сначала подключите ISO', onclick: () => act({ action: 'install' }) },
+            m.running ? '↻ Перезапустить с ISO' : '▶ Запустить с ISO') : null),
+        step(3, false, 'Установите ОС в консоли VNC',
+          m.cd_vnc_wait ? 'Машина ждёт подключения к консоли: установщик начнёт загружаться, когда вы её откроете. ' : '',
+          state.terminal && m.running ? h('a', { class: 'btn sm primary', href: '#/env/' + enc + '/vnc' }, '🖥 Открыть консоль') : null),
+        step(4, !fromCD && !iso, 'Когда установка закончится, загружайтесь с диска',
+          'Машина перезапустится с диска, ISO будет извлечён. ',
+          op ? h('button', { class: 'sm', type: 'button', disabled: !fromCD && !iso, onclick: () => act({ action: 'finish' }) }, '✓ Установка завершена') : null)));
+  };
+  return {
+    el,
+    update(env) {
+      if (status !== env.status) { status = env.status; load(); }
+    },
+  };
 }
 
 function copyBtn(text) {
@@ -802,7 +898,7 @@ function copyBtn(text) {
 
 function vncCard(e, keep) {
   const enc = encodeURIComponent(e.jname);
-  if (!e.vnc_port) return h('div', { class: 'card' }, h('h2', null, 'Консоль VNC'), h('p', { class: 'muted' }, 'VNC для этой машины не назначен.'));
+  if (!e.vnc_port) return h('div', { class: 'card' }, h('h2', null, 'Консоль VNC'), h('p', { class: 'muted' }, vncMissing(e.vnc_off, e.vnc_auto)));
   const bind = e.vnc_bind || '127.0.0.1';
   const local = bind === '127.0.0.1' || bind === 'localhost' || bind === '::1';
   const addr = (bind === '0.0.0.0' || bind === '::' ? location.hostname : bind) + ':' + e.vnc_port;
@@ -1286,7 +1382,8 @@ async function createJail() {
 }
 
 async function createVM(emu) {
-  const { profiles } = await api('GET', '/api/profiles?emulator=' + emu);
+  const [{ profiles }, isoList] = await Promise.all([api('GET', '/api/profiles?emulator=' + emu), api('GET', '/api/isos').catch(() => ({ isos: [] }))]);
+  const isoOptions = [['', 'из профиля (CBSD скачает сам)'], ...isoList.isos.filter((i) => i.usable).map((i) => [i.media, (i.file || i.media) + ' · ' + fmtBytes(i.size)])];
   if (!profiles.length) { toast('Профили ОС не найдены. Проверьте dist_dir и workdir в настройках.', 'err'); return; }
   const types = [...new Set(profiles.map((p) => p.vm_os_type))];
   const profOptions = (t) => profiles.filter((p) => p.vm_os_type === t).map((p) => [p.vm_profile, (p.long_description || p.vm_profile) + (p.cloud ? ' ☁' : '')]);
@@ -1296,6 +1393,8 @@ async function createVM(emu) {
     { name: 'jname', label: 'Имя ВМ', placeholder: 'vm1', help: 'латиница, цифры и _' },
     { name: 'vm_os_type', label: 'Тип ОС', type: 'select', options: types.map((t) => [t, t]), value: defType },
     { name: 'vm_os_profile', label: 'Профиль (дистрибутив)', type: 'select', options: profOptions(defType), full: true, help: '☁ — облачный образ с cloud-init: готов к работе без установки' },
+    { name: 'iso', label: 'Установочный ISO', type: 'select', options: isoOptions, full: true, show: (v) => !isCloud(v),
+      help: 'свой образ из раздела «Образы и ISO»; профиль задаёт настройки ВМ для этой ОС' },
     { name: 'vm_cpus', label: 'vCPU', type: 'number', value: 1, min: 1, max: 256 },
     { name: 'vm_ram', label: 'RAM', value: '1g', help: 'например 1g, 512m' },
     { name: 'imgsize', label: 'Размер диска', value: '20g' },
@@ -1323,7 +1422,7 @@ async function createVM(emu) {
     { text: 'Создать', class: 'primary', onClick: async () => {
       const v = f.values();
       if (v.bhyve_vnc_tcp_bind === '0.0.0.0' && !v.vnc_password) { f.showError({ field: 'vnc_password', message: 'Задайте пароль, если VNC доступен извне' }); return false; }
-      for (const k of ['ci_ip4_addr', 'ci_gw4', 'ci_user_add', 'ci_user_pubkey', 'vnc_password']) if (v[k] === '') delete v[k];
+      for (const k of ['ci_ip4_addr', 'ci_gw4', 'ci_user_add', 'ci_user_pubkey', 'vnc_password', 'iso']) if (v[k] === '') delete v[k];
       try { await runAction('POST', '/api/vms/' + emu, v); } catch (err) { f.showError(err); return false; }
     } },
   ], { wide: true, sticky: true });
@@ -1337,14 +1436,156 @@ function rowsTable(rows, cols, empty) {
     h('tbody', null, rows.map((r) => h('tr', null, cols.map(([k, , fmt]) => h('td', { class: k === 'path' ? 'mono wrap' : '' }, fmt ? fmt(r[k]) : r[k] == null || r[k] === '0' ? '—' : String(r[k]))))))));
 }
 
+// The upload in progress survives page changes: it is an XHR owned by the tab.
+let isoUpload = null; // { name, loaded, total, started, xhr, onChange }
+
+// isoFileName turns a local file name into one the server accepts.
+function isoFileName(n) {
+  let base = String(n || '').replace(/\.iso$/i, '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^[^A-Za-z0-9]+/, '').slice(0, 59);
+  return base ? base + '.iso' : '';
+}
+
+function uploadISO(file, name, sha256) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    isoUpload = { name, loaded: 0, total: file.size, started: Date.now(), xhr, onChange: null };
+    const changed = () => { if (isoUpload && isoUpload.onChange) isoUpload.onChange(); };
+    const done = (fn, v) => { isoUpload = null; window.removeEventListener('beforeunload', guard); fn(v); refreshCurrent(); };
+    const guard = (e) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', guard);
+    xhr.open('POST', '/api/isos/upload?name=' + encodeURIComponent(name));
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.setRequestHeader('X-CSRF-Token', state.csrf);
+    if (sha256) xhr.setRequestHeader('X-Content-SHA256', sha256);
+    xhr.upload.onprogress = (e) => { if (isoUpload) { isoUpload.loaded = e.loaded; changed(); } };
+    xhr.upload.onload = () => { if (isoUpload) { isoUpload.loaded = isoUpload.total; isoUpload.checking = true; changed(); } };
+    xhr.onload = () => {
+      let d = {};
+      try { d = JSON.parse(xhr.responseText); } catch (_) { /* not JSON */ }
+      if (xhr.status === 200) done(resolve, d);
+      else done(reject, Object.assign(new Error(d.error || ('Ошибка ' + xhr.status)), { field: d.field }));
+    };
+    xhr.onerror = () => done(reject, new Error('Соединение прервано'));
+    xhr.onabort = () => done(reject, Object.assign(new Error('Загрузка отменена'), { silent: true }));
+    xhr.send(file);
+  });
+}
+
+function isoUploadCard(info) {
+  const card = h('div', { class: 'card' });
+  const render = () => {
+    if (isoUpload) {
+      const u = isoUpload;
+      const pct = u.total ? Math.floor(u.loaded * 100 / u.total) : 0;
+      const secs = (Date.now() - u.started) / 1000;
+      const speed = secs > 0 ? u.loaded / secs : 0;
+      const left = speed > 0 ? Math.round((u.total - u.loaded) / speed) : 0;
+      fill(card, h('h2', null, 'Загрузка ' + u.name),
+        h('div', { class: 'meter' }, h('i', { style: 'width:' + pct + '%' })),
+        h('div', { class: 'row mt' },
+          h('span', null, u.checking ? 'Проверка и регистрация в CBSD…' : fmtBytes(u.loaded) + ' из ' + fmtBytes(u.total) + ' (' + pct + '%)'),
+          !u.checking && speed ? h('span', { class: 'muted small' }, fmtBytes(speed) + '/с, осталось ' + fmtUptimeShort(left)) : null,
+          h('span', { style: 'flex:1' }),
+          u.checking ? null : h('button', { class: 'danger sm', type: 'button', onclick: () => u.xhr.abort() }, 'Отменить')),
+        h('p', { class: 'muted small' }, 'Не закрывайте вкладку до окончания загрузки.'));
+      u.onChange = render;
+      return;
+    }
+    const fileInput = h('input', { type: 'file', accept: '.iso,application/x-iso9660-image' });
+    const f = buildForm([
+      { name: 'name', label: 'Имя файла на сервере', placeholder: 'FreeBSD-14.3-RELEASE-amd64-disc1.iso', help: 'латиница, цифры, . _ -, окончание .iso' },
+      { name: 'sha256', label: 'SHA-256 (необязательно)', placeholder: 'проверить контрольную сумму', help: 'с сайта дистрибутива; файл с другой суммой не сохранится' },
+    ]);
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files[0];
+      if (file) f.els.name.input.value = isoFileName(file.name);
+    });
+    const btn = h('button', { class: 'primary', type: 'button', disabled: !info.writable, onclick: async () => {
+      const file = fileInput.files[0];
+      if (!file) { toast('Выберите файл ISO', 'err'); return; }
+      if (file.size > info.max_bytes) { toast('Файл больше допустимого (' + fmtBytes(info.max_bytes) + ')', 'err'); return; }
+      if (info.free_bytes != null && file.size > info.free_bytes) { toast('Недостаточно места: свободно ' + fmtBytes(info.free_bytes), 'err'); return; }
+      const v = f.values();
+      try {
+        const p = uploadISO(file, v.name, v.sha256);
+        render();
+        const r = await p;
+        toast('Образ ' + r.file + ' загружен (' + fmtBytes(r.size) + ')', 'ok');
+      } catch (err) { if (!err.silent) f.showError(err); render(); }
+    } }, 'Загрузить');
+    fill(card, h('h2', null, 'Загрузить с компьютера'),
+      h('div', { class: 'field full' }, fileInput), f.form,
+      h('div', { class: 'row mt' }, btn,
+        h('span', { class: 'muted small' }, 'до ' + fmtBytes(info.max_bytes) + (info.free_bytes != null ? ', свободно ' + fmtBytes(info.free_bytes) : ''))));
+  };
+  render();
+  return card;
+}
+
+function fmtUptimeShort(s) {
+  if (s < 60) return s + ' с';
+  if (s < 3600) return Math.floor(s / 60) + ' мин';
+  return Math.floor(s / 3600) + ' ч ' + Math.floor(s % 3600 / 60) + ' мин';
+}
+
+function isoFetchCard(info) {
+  const f = buildForm([
+    { name: 'url', label: 'Адрес (URL)', placeholder: 'https://download.freebsd.org/…/FreeBSD-14.3-RELEASE-amd64-disc1.iso', full: true },
+    { name: 'name', label: 'Имя файла на сервере', placeholder: 'по умолчанию из адреса' },
+    { name: 'sha256', label: 'SHA-256 (необязательно)' },
+  ]);
+  f.els.url.input.addEventListener('change', () => {
+    if (f.els.name.input.value) return;
+    try { f.els.name.input.value = isoFileName(decodeURIComponent(new URL(f.els.url.input.value).pathname.split('/').pop())); } catch (_) { /* not a URL yet */ }
+  });
+  return h('div', { class: 'card' }, h('h2', null, 'Скачать по ссылке'), f.form,
+    h('div', { class: 'row mt' }, h('button', { class: 'primary', type: 'button', disabled: !info.writable, onclick: async () => {
+      const v = f.values();
+      if (!v.name) delete v.name;
+      if (!v.sha256) delete v.sha256;
+      try { await runAction('POST', '/api/isos/fetch', v); } catch (err) { f.showError(err); }
+    } }, 'Скачать'), h('span', { class: 'muted small' }, 'сервер скачивает сам, прогресс — в окне задачи')));
+}
+
+function isoTable(list) {
+  if (!list.length) return h('div', { class: 'table-wrap' }, h('div', { class: 'empty' }, 'ISO-образов пока нет'));
+  return h('div', { class: 'table-wrap' }, h('table', null,
+    h('thead', null, h('tr', null, ['Имя', 'Размер', 'Подключён к', ''].map((t) => h('th', null, t)))),
+    h('tbody', null, list.map((it) => h('tr', null,
+      h('td', { class: 'wrap', style: 'min-width:220px' }, h('div', null, it.media || it.file),
+        h('div', { class: 'mono muted small', style: 'word-break:break-all' }, it.path),
+        h('div', { class: 'row' },
+          it.uploaded ? h('span', { class: 'pill run' }, 'загружен через веб') : h('span', { class: 'pill off' }, 'CBSD'),
+          !it.registered ? h('span', { class: 'pill warn', title: 'будет зарегистрирован при создании ВМ' }, 'не зарегистрирован') : null,
+          it.missing ? h('span', { class: 'pill warn', title: 'запись есть в CBSD, но файла нет' }, 'файл не найден') : null)),
+      h('td', null, fmtBytes(it.size)),
+      h('td', null, it.attached_to.length ? it.attached_to.map((j) => h('a', { href: '#/env/' + encodeURIComponent(j) }, j)).reduce((a, b) => [a, ', ', b]) : '—'),
+      h('td', { class: 'actions' }, it.uploaded && can('admin') ? h('button', { class: 'danger sm', type: 'button', disabled: it.attached_to.length > 0,
+        title: it.attached_to.length ? 'образ подключён к ВМ' : null,
+        onclick: async () => {
+          if (!(await confirmDialog('Удалить ' + it.file + '?', 'Файл будет удалён с диска и из списка носителей CBSD.', { danger: true, confirmText: 'Удалить' }))) return;
+          try { await api('DELETE', '/api/isos/' + encodeURIComponent(it.file)); toast('Образ удалён', 'ok'); refreshCurrent(); } catch (e) { fail(e); }
+        } }, 'Удалить') : null))))));
+}
+
 async function pageImages() {
-  const d = await api('GET', '/api/images');
-  fill($('#main'), pageHead('Образы и ISO'),
-    h('h2', null, 'Образы (images)'),
-    rowsTable(d.images, [['name', 'Имя'], ['emulator', 'Эмулятор'], ['size', 'Размер', fmtBytes], ['path', 'Путь'], ['created', 'Создан']], 'Нет зарегистрированных образов'),
-    h('h2', { class: 'mt' }, 'Носители (ISO и диски)'),
-    rowsTable(d.media, [['name', 'Имя'], ['type', 'Тип'], ['jname', 'Подключён к'], ['size', 'Размер', fmtBytes], ['path', 'Путь']], 'Нет зарегистрированных носителей'),
-    h('p', { class: 'muted small mt' }, 'ISO для профилей скачиваются автоматически при создании ВМ.'));
+  const main = $('#main');
+  const render = async () => {
+    const [d, iso] = await Promise.all([api('GET', '/api/images'), api('GET', '/api/isos')]);
+    const other = d.media.filter((m) => m.type !== 'iso');
+    fill(main, pageHead('Образы и ISO', h('button', { type: 'button', onclick: () => refreshCurrent() }, 'Обновить')),
+      h('h2', null, 'ISO-образы'),
+      h('p', { class: 'muted' }, 'Установочные образы для ВМ. Выберите образ в поле «Установочный ISO» при создании ВМ; без него CBSD скачает ISO профиля сам.'),
+      can('admin') && !iso.writable ? h('div', { class: 'banner warn' }, iso.dir_error || 'Каталог для ISO недоступен') : null,
+      can('admin') ? h('div', { class: 'grid cols-2' }, isoUploadCard(iso), isoFetchCard(iso)) : null,
+      h('div', { class: 'mt' }, isoTable(iso.isos)),
+      h('h2', { class: 'mt' }, 'Образы (images)'),
+      rowsTable(d.images, [['name', 'Имя'], ['emulator', 'Эмулятор'], ['size', 'Размер', fmtBytes], ['path', 'Путь'], ['created', 'Создан']], 'Нет зарегистрированных образов'),
+      h('h2', { class: 'mt' }, 'Диски'),
+      rowsTable(other, [['name', 'Имя'], ['type', 'Тип'], ['jname', 'Подключён к'], ['size', 'Размер', fmtBytes], ['path', 'Путь']], 'Нет зарегистрированных дисков'));
+  };
+  await render();
+  refreshFn = render;
 }
 
 async function pageBases() {
@@ -1389,7 +1630,7 @@ async function pageJobs() {
 async function pageSetup() {
   const d = await api('GET', '/api/setup');
   const checks = h('div', { class: 'card checks' }, h('h2', null, 'Проверка системы'), h('ul', null, d.checks.map((c) => h('li', null,
-    h('span', { class: 'mark ' + (c.ok ? 'ok' : 'bad') }, c.ok ? '✓' : '✗'),
+    h('span', { class: 'mark ' + (c.ok ? 'ok' : c.warn ? 'warn' : 'bad') }, c.ok ? '✓' : c.warn ? '!' : '✗'),
     h('div', null, h('div', null, c.title, c.detail ? h('span', { class: 'muted mono small' }, '  ' + c.detail) : null),
       !c.ok && c.hint ? h('div', { class: 'muted small' }, c.hint) : null)))));
   const content = [pageHead('Установка и настройка'), checks];

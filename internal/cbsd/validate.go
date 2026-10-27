@@ -495,3 +495,24 @@ func ValidNodeName(s string) bool { return reNodeName.MatchString(s) }
 
 // ValidDescription validates a free-text description shown in the UI only.
 func ValidDescription(s string) bool { return rePlainText.MatchString(s) }
+
+// ISO images uploaded through the web UI. The file name ends up in CBSD's
+// media database and in bhyve arguments, so it is kept to a safe alphabet.
+var (
+	reISOFile  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,58}\.(iso|ISO)$`)
+	reMedia    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
+	reMediaRel = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*(/[A-Za-z0-9][A-Za-z0-9_.-]*)*$`)
+)
+
+// ValidISOFile reports whether s is an acceptable ISO file name (no paths).
+func ValidISOFile(s string) bool { return reISOFile.MatchString(s) }
+
+// ValidMediaName reports whether s is a CBSD media name safe to pass to the CLI.
+func ValidMediaName(s string) bool { return reMedia.MatchString(s) }
+
+// ValidMediaRel reports whether s is a safe path relative to CBSD's ISO directory.
+func ValidMediaRel(s string) bool { return len(s) <= 200 && reMediaRel.MatchString(s) }
+
+// ISOMediaName is the CBSD media name for an uploaded ISO file. The "web-"
+// prefix keeps it apart from the names CBSD gives to ISOs of its profiles.
+func ISOMediaName(file string) string { return "web-" + file[:len(file)-len(".iso")] }

@@ -37,6 +37,7 @@ type Server struct {
 	static   *staticFS
 	terms    terminals
 	hist     *snaphist.Store
+	isos     isoGate
 	version  string
 }
 
@@ -98,6 +99,9 @@ func (s *Server) Handler() http.Handler {
 	s.route(mux, "PUT /api/envs/{name}/limits", o, s.handleJailLimitsSet)
 	s.route(mux, "GET /api/envs/{name}/terminal", v, s.handleTerminal)
 	s.route(mux, "GET /api/envs/{name}/stats", v, s.handleEnvStats)
+	s.route(mux, "GET /api/envs/{name}/logs", o, s.handleEnvLogs)
+	s.route(mux, "GET /api/envs/{name}/media", v, s.handleVMMedia)
+	s.route(mux, "POST /api/envs/{name}/media", o, s.handleVMMediaAction)
 	s.route(mux, "GET /api/envs/{name}/vnc", v, s.handleVNCInfo)
 	s.route(mux, "GET /api/envs/{name}/vnc/ws", v, s.handleVNCProxy)
 	s.route(mux, "GET /api/envs/{name}/snapshots", v, s.handleSnapshotList)
@@ -109,6 +113,10 @@ func (s *Server) Handler() http.Handler {
 	s.route(mux, "POST /api/vms/{emulator}", o, s.handleVMCreate)
 	s.route(mux, "GET /api/profiles", v, s.handleProfiles)
 	s.route(mux, "GET /api/images", v, s.handleImages)
+	s.route(mux, "GET /api/isos", v, s.handleISOs)
+	s.route(mux, "POST "+isoUploadPath, a, s.handleISOUpload)
+	s.route(mux, "POST /api/isos/fetch", a, s.handleISOFetch)
+	s.route(mux, "DELETE /api/isos/{file}", a, s.handleISODelete)
 	s.route(mux, "GET /api/bases", v, s.handleBases)
 	s.route(mux, "POST /api/bases", a, s.handleBaseFetch)
 	s.route(mux, "GET /api/nodes", v, s.handleNodes)
@@ -257,7 +265,10 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			h.Set("Cache-Control", "no-store")
-			r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+			// ISO uploads stream large bodies; that handler sets its own limit.
+			if r.URL.Path != isoUploadPath {
+				r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+			}
 		}
 		next.ServeHTTP(w, r)
 	})

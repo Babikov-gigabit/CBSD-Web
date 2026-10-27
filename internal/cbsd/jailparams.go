@@ -33,6 +33,8 @@ type Param struct {
 	Live bool `json:"live"`
 	// Admin params run host-side commands or touch the base; only admins change them.
 	Admin bool `json:"admin,omitempty"`
+	// Secret params (passwords) are never sent to the browser.
+	Secret bool `json:"secret,omitempty"`
 
 	valid func(string) bool
 }
