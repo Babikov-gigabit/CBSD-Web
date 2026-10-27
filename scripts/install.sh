@@ -40,9 +40,11 @@ else
 	[ -n "$src" ] || die "cbsd-web binary not found next to the installer"
 fi
 
-say "installing packages: cbsd sudo"
+say "installing packages: cbsd sudo tmux"
 pkg info -e cbsd || pkg install -y cbsd
 pkg info -e sudo || pkg install -y sudo
+# bstart refuses to start bhyve VMs without tmux.
+pkg info -e tmux || pkg install -y tmux
 
 say "creating user ${USER}"
 if ! pw usershow "${USER}" >/dev/null 2>&1; then

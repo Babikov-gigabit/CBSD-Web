@@ -196,3 +196,26 @@ func TestVMCreateWithISO(t *testing.T) {
 		t.Errorf("ISO with cloud profile: %d %v", resp.StatusCode, m)
 	}
 }
+
+func TestEnvLogs(t *testing.T) {
+	_, newClient := setup(t)
+	if resp, _ := newClient("view").do("GET", "/api/envs/vm_freebsd/logs", nil, nil); resp.StatusCode != 403 {
+		t.Errorf("viewer logs: %d", resp.StatusCode)
+	}
+	op := newClient("oper")
+	resp, m := op.do("GET", "/api/envs/vm_freebsd/logs", nil, nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("logs: %d %v", resp.StatusCode, m)
+	}
+	first := m["logs"].([]any)[0].(map[string]any)
+	text := first["text"].(string)
+	if !strings.HasPrefix(first["title"].(string), "bstart.log") || !strings.Contains(text, "bhyve exited with code 4") {
+		t.Errorf("bstart.log: %v", first)
+	}
+	if strings.Contains(text, "secret123") || !strings.Contains(text, "password=***") {
+		t.Errorf("VNC password not redacted: %s", text)
+	}
+	if resp, _ := op.do("GET", "/api/envs/..%2Fetc/logs", nil, nil); resp.StatusCode != 400 && resp.StatusCode != 404 {
+		t.Errorf("hostile name: %d", resp.StatusCode)
+	}
+}

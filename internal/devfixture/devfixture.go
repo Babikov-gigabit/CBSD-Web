@@ -151,6 +151,17 @@ func Build(dir string) error {
 	if err := os.WriteFile(filepath.Join(iso, "upload", "alpine-3.20.iso"), FakeISO(), 0o644); err != nil {
 		return err
 	}
+	// bstart.log of a VM that failed to start, as CBSD writes it.
+	vdir := filepath.Join(dir, "jails-system", "vm_freebsd")
+	if err := os.MkdirAll(vdir, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(vdir, "bstart.log"), []byte("Mon Oct 27 08:50:01 UTC 2026\nBoot from CD\n"+
+		"cmd: env LIB9P_LOGGING=/usr/jails/jails-system/vm_freebsd/cbsd_lib9p.log /usr/sbin/bhyve -A -H -P -c 2 -m 2147483648 "+
+		"-s 29,fbuf,tcp=127.0.0.1:5900,w=1024,h=768,password=secret123 vm_freebsd\n-----\n"+
+		"vm exit[0]\n\treason\t\tVMX\n\trip\t\t0x0000000000000000\nbhyve exited with code 4\n"), 0o644); err != nil {
+		return err
+	}
 	for name, body := range profiles {
 		if err := os.WriteFile(filepath.Join(pdir, name), []byte(body), 0o644); err != nil {
 			return err

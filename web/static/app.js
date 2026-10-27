@@ -242,7 +242,7 @@ const routes = [
   [/^jails$/, () => pageEnvs('jail'), 'jails'],
   [/^vms$/, () => pageEnvs('bhyve'), 'vms'],
   [/^xen$/, () => pageEnvs('xen'), 'xen'],
-  [/^env\/([A-Za-z0-9_.-]+)(?:\/(config|limits))?$/, (m) => pageEnv(m[1], m[2] || ''), null],
+  [/^env\/([A-Za-z0-9_.-]+)(?:\/(config|limits|logs))?$/, (m) => pageEnv(m[1], m[2] || ''), null],
   [/^env\/([A-Za-z0-9_.-]+)\/terminal$/, (m) => pageTerminal(m[1]), null],
   [/^env\/([A-Za-z0-9_.-]+)\/vnc$/, (m) => pageVNC(m[1]), null],
   [/^images$/, pageImages, 'images'],
@@ -489,7 +489,7 @@ async function pageEnv(name, tab) {
     const { env: e, busy_job: busyJob } = await api('GET', '/api/envs/' + enc);
     const back = { jail: '#/jails', bhyve: '#/vms', xen: '#/xen' }[e.emulator] || '#/';
     const isJail = e.emulator === 'jail';
-    if (!isJail) tab = '';
+    if (!isJail && tab !== 'logs') tab = '';
     const tools = [];
     if (can('operator')) {
       if (!isJail) tools.push(h('button', { type: 'button', onclick: () => editEnv(e) }, 'Настройки'));
@@ -504,13 +504,17 @@ async function pageEnv(name, tab) {
       h('div', { class: 'row', style: 'margin-bottom:16px' }, statusPill(e, busyJob), envButtons(e, busyJob, false), h('span', { style: 'flex:1' }), tools),
       e.maintenance ? h('div', { class: 'banner warn' }, 'Режим обслуживания: ', e.maintenance) : null,
     ];
+    const t = (key, title) => h('a', { href: '#/env/' + enc + (key ? '/' + key : ''), class: tab === key ? 'active' : '' }, title);
+    const logsTab = can('operator') ? t('logs', 'Журналы') : null;
     if (isJail) {
-      const t = (key, title) => h('a', { href: '#/env/' + enc + (key ? '/' + key : ''), class: tab === key ? 'active' : '' }, title);
-      head.push(h('nav', { class: 'tabs' }, t('', 'Обзор'), t('config', 'Конфигурация'), t('limits', 'Лимиты ресурсов'),
+      head.push(h('nav', { class: 'tabs' }, t('', 'Обзор'), t('config', 'Конфигурация'), t('limits', 'Лимиты ресурсов'), logsTab,
         state.terminal ? h('a', { href: '#/env/' + enc + '/terminal' }, '>_ Терминал') : null));
+    } else if (logsTab) {
+      head.push(h('nav', { class: 'tabs' }, t('', 'Обзор'), logsTab));
     }
     if (tab === 'config') return fill(main, head, await jailConfigTab(e));
     if (tab === 'limits') return fill(main, head, await jailLimitsTab(e));
+    if (tab === 'logs') return fill(main, head, await envLogsTab(e));
     fill(main, head, envOverview(e, keep));
   };
   await render();
@@ -527,6 +531,24 @@ function saveBar(onSave, onReset, extra) {
   save.addEventListener('click', async () => { save.disabled = true; try { await onSave(); } finally { save.disabled = false; } });
   const bar = h('div', { class: 'savebar', hidden: true }, count, extra, h('span', { style: 'flex:1' }), reset, save);
   return { bar, set(n) { bar.hidden = n === 0; count.textContent = 'Изменено: ' + n; } };
+}
+
+async function envLogsTab(e) {
+  const { logs } = await api('GET', '/api/envs/' + encodeURIComponent(e.jname) + '/logs');
+  const kindPill = (l) => l.kind === 'job' ? jobPill(l.state) : h('span', { class: 'pill off' }, l.kind === 'system' ? 'система' : 'CBSD');
+  const cards = logs.map((l) => {
+    const pre = l.error ? null : h('pre', { class: 'log short' }, l.text || '(пусто)');
+    if (pre) setTimeout(() => { pre.scrollTop = pre.scrollHeight; });
+    return h('div', { class: 'card mt' },
+      h('div', { class: 'row', style: 'margin-bottom:8px' }, h('h2', { style: 'margin:0' }, l.title), kindPill(l), h('span', { style: 'flex:1' }),
+        h('span', { class: 'muted small' }, [l.modified ? fmtTime(l.modified) : null, l.size ? fmtBytes(l.size) : null, l.cut ? 'показан конец' : null].filter(Boolean).join(' · '))),
+      l.path ? h('div', { class: 'mono muted small', style: 'word-break:break-all;margin-bottom:8px' }, l.path) : null,
+      l.error ? h('div', { class: 'banner warn' }, l.error) : pre);
+  });
+  return h('div', null,
+    h('div', { class: 'row' }, h('p', { class: 'muted', style: 'margin:0' }, 'Журналы CBSD (bstart.log — команда bhyve и её вывод), строки системного журнала и вывод последних задач. Пароли скрыты.'),
+      h('span', { style: 'flex:1' }), h('button', { type: 'button', onclick: () => refreshCurrent() }, 'Обновить')),
+    cards.length ? cards : h('div', { class: 'card mt empty' }, 'Журналов пока нет: окружение ещё не запускалось.'));
 }
 
 async function jailConfigTab(e) {
