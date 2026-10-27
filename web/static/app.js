@@ -510,8 +510,10 @@ async function pageEnv(name, tab) {
       head.push(h('nav', { class: 'tabs' }, t('', 'Обзор'), t('config', 'Конфигурация'), t('limits', 'Лимиты ресурсов'), logsTab,
         state.terminal ? h('a', { href: '#/env/' + enc + '/terminal' }, '>_ Терминал') : null));
     } else {
-      const consoleTab = state.terminal && e.vnc_port ? h('a', { href: '#/env/' + enc + '/vnc', class: e.status === 1 ? '' : 'muted', title: e.status === 1 ? '' : 'Машина не запущена' }, '🖥 Консоль') : null;
-      head.push(h('nav', { class: 'tabs' }, t('', 'Обзор'), t('config', 'Конфигурация'), consoleTab, logsTab));
+      const off = e.status === 1 ? '' : 'muted', why = e.status === 1 ? '' : 'Машина не запущена';
+      const consoleTab = state.terminal ? h('a', { href: '#/env/' + enc + '/vnc', class: off, title: why || 'Экран машины через VNC' }, '🖥 Консоль VNC') : null;
+      const termTab = state.terminal ? h('a', { href: '#/env/' + enc + '/terminal', class: off, title: why || 'Текстовая консоль (последовательный порт)' }, '>_ Терминал') : null;
+      head.push(h('nav', { class: 'tabs' }, t('', 'Обзор'), t('config', 'Конфигурация'), consoleTab, termTab, logsTab));
     }
     if (tab === 'config') return fill(main, head, await configTab(e));
     if (tab === 'limits') return fill(main, head, await jailLimitsTab(e));
@@ -749,12 +751,13 @@ async function pageTerminal(name) {
   const main = $('#main');
   const enc = encodeURIComponent(name);
   const { env: e } = await api('GET', '/api/envs/' + enc);
-  const backBtn = h('a', { class: 'btn', href: '#/env/' + enc }, '← К клетке');
-  if (!state.terminal || e.emulator !== 'jail' || e.status !== 1) {
+  const isVM = e.emulator === 'bhyve' || e.emulator === 'xen';
+  const backBtn = h('a', { class: 'btn', href: '#/env/' + enc }, isVM ? '← К машине' : '← К клетке');
+  if (!state.terminal || !(e.emulator === 'jail' || isVM) || e.status !== 1) {
     const why = !state.terminal ? 'Терминал доступен администратору (параметр terminal_role в конфиге).'
-      : e.emulator !== 'jail' ? 'Терминал доступен только для клеток.' : 'Клетка не запущена.';
+      : !(e.emulator === 'jail' || isVM) ? 'Терминал недоступен для этого типа окружения.' : isVM ? 'Машина не запущена.' : 'Клетка не запущена.';
     return fill(main, pageHead('Терминал: ' + name, backBtn), h('div', { class: 'banner warn' }, why),
-      e.emulator === 'jail' && e.status !== 1 && can('operator') ? envButtons(e, null, false) : null);
+      e.status !== 1 && can('operator') ? envButtons(e, null, false) : null);
   }
   await loadXterm();
   const pill = h('span', { class: 'pill off' }, 'подключение…');
@@ -763,8 +766,11 @@ async function pageTerminal(name) {
   let ws = null;
   const reconnect = h('button', { type: 'button', hidden: true, onclick: () => connect() }, 'Переподключить');
   fill(main, pageHead('Терминал: ' + name, pill, reconnect, backBtn), box,
-    h('div', { class: 'muted small mt' }, 'Вы входите как root через cbsd jlogin. Сеанс закрывается через ',
-      'полчаса бездействия; если на хосте установлен tmux, CBSD сохраняет сеанс и при следующем входе подключится к нему.'));
+    isVM ? h('div', { class: 'muted small mt' }, 'Последовательная консоль (COM1) через cbsd ' + (e.emulator === 'xen' ? 'xlogin' : 'blogin') + '. ',
+      'Работает, если гость выводит консоль на последовательный порт (обычно Linux и FreeBSD; графический установщик виден только в «Консоли VNC»). ',
+      'Если экран пуст, нажмите Enter. Закрытие вкладки не останавливает машину.')
+      : h('div', { class: 'muted small mt' }, 'Вы входите как root через cbsd jlogin. Сеанс закрывается через ',
+        'полчаса бездействия; если на хосте установлен tmux, CBSD сохраняет сеанс и при следующем входе подключится к нему.'));
   const term = new window.Terminal({ cursorBlink: true, fontSize: 14, scrollback: 5000, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
     theme: { background: '#0d1117', foreground: '#d1d7e0' } });
   const fit = new window.FitAddon.FitAddon();

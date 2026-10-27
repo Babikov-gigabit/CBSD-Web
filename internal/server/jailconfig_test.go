@@ -143,6 +143,29 @@ func TestTerminal(t *testing.T) {
 	}
 }
 
+func TestVMTerminal(t *testing.T) {
+	ts, newClient := setup(t)
+	admin := newClient("admin")
+	if _, resp, err := dialTerminal(t, admin, "/api/envs/vm_debian/terminal?csrf="+admin.csrf, ts.URL); err == nil || resp.StatusCode != 409 {
+		t.Errorf("stopped VM: %v", err)
+	}
+	conn, _, err := dialTerminal(t, admin, "/api/envs/vm_freebsd/terminal?csrf="+admin.csrf, ts.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var got strings.Builder
+	for !strings.Contains(got.String(), "fake blogin: jname=vm_freebsd remote=1") {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("read: %v (got %q)", err, got.String())
+		}
+		got.Write(data)
+	}
+}
+
 func TestVMConfig(t *testing.T) {
 	_, newClient := setup(t)
 	view, oper, admin := newClient("view"), newClient("oper"), newClient("admin")
