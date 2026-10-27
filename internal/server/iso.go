@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -91,9 +92,10 @@ type isoInfo struct {
 	Size       int64    `json:"size"`
 	Modified   string   `json:"modified,omitempty"`
 	AttachedTo []string `json:"attached_to"`
-	Uploaded   bool     `json:"uploaded"`   // stored by cbsd-web, may be deleted here
-	Registered bool     `json:"registered"` // known to 'cbsd media'
-	Usable     bool     `json:"usable"`     // can be chosen when creating a VM
+	Uploaded   bool     `json:"uploaded"`          // stored by cbsd-web, may be deleted here
+	Registered bool     `json:"registered"`        // known to 'cbsd media'
+	Usable     bool     `json:"usable"`            // can be chosen when creating a VM
+	Missing    bool     `json:"missing,omitempty"` // registered, but the file is gone
 }
 
 func (s *Server) listISOs(ctx context.Context) ([]isoInfo, error) {
@@ -145,7 +147,12 @@ func (s *Server) listISOs(ctx context.Context) ([]isoInfo, error) {
 	for _, p := range order {
 		it := byPath[p]
 		_, rel := s.isoRel(it.Path)
-		it.Usable = rel != "" && cbsd.ValidMediaName(it.Media)
+		// bstart silently falls back to downloading the profile's ISO when the
+		// media file is gone, so such entries must not be offered.
+		if _, err := os.Stat(it.Path); errors.Is(err, fs.ErrNotExist) {
+			it.Missing = true
+		}
+		it.Usable = rel != "" && cbsd.ValidMediaName(it.Media) && !it.Missing
 		out = append(out, *it)
 	}
 	sort.SliceStable(out, func(i, j int) bool {

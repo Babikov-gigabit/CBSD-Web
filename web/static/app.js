@@ -847,7 +847,8 @@ function installCard(e) {
     try { render(await api('GET', '/api/envs/' + enc + '/media')); } catch (err) { fill(el, h('h2', null, 'Установка ОС'), h('div', { class: 'banner warn' }, err.message)); } finally { loading = false; }
   };
   const render = (m) => {
-    const iso = m.attached[0];
+    const iso = m.attached.find((i) => !i.missing) || m.attached[0];
+    const ready = !!iso && !iso.missing;
     const fromCD = m.boot === 'cd';
     const op = can('operator');
     const step = (n, done, title, ...body) => h('li', { class: done ? 'done' : '' }, h('b', null, (done ? '✓ ' : n + '. ') + title), h('div', { class: 'muted small' }, body));
@@ -855,9 +856,10 @@ function installCard(e) {
     fill(el,
       h('div', { class: 'row', style: 'margin-bottom:8px' }, h('h2', { style: 'margin:0' }, 'Установка ОС'),
         h('span', { class: 'pill ' + (fromCD ? 'run' : 'off') }, fromCD ? 'загрузка с ISO' : 'загрузка с диска'),
-        iso ? h('span', { class: 'pill on' }, 'ISO: ' + (iso.file || iso.media)) : h('span', { class: 'pill off' }, 'ISO не подключён')),
+        iso ? h('span', { class: 'pill ' + (ready ? 'on' : 'warn') }, 'ISO: ' + (iso.file || iso.media)) : h('span', { class: 'pill off' }, 'ISO не подключён')),
       h('ol', { class: 'install-steps' },
-        step(1, !!iso, 'Подключите установочный ISO',
+        step(1, ready, 'Подключите установочный ISO',
+          iso && !ready ? h('div', { class: 'banner warn' }, 'Файл образа ', h('span', { class: 'mono' }, iso.media), ' не найден (', h('span', { class: 'mono' }, iso.path), '). CBSD в этом случае пытается скачать ISO профиля. Выберите другой образ ниже и нажмите «Заменить» (новый можно загрузить в «Образы и ISO»).') : null,
           iso ? ['Подключён ', h('span', { class: 'mono' }, iso.file || iso.media), '. ',
             op ? h('button', { class: 'sm', type: 'button', onclick: () => act({ action: 'eject' }) }, 'Извлечь') : null] : null,
           op && m.available.length ? h('div', { class: 'row', style: 'margin-top:6px' }, sel,
@@ -865,7 +867,7 @@ function installCard(e) {
           !m.available.length && !iso ? ['Загрузите образ в разделе ', h('a', { href: '#/images' }, '«Образы и ISO»'), '.'] : null),
         step(2, fromCD && m.running, 'Запустите машину с ISO',
           'Машина загрузится с ISO, даже если на диске уже что-то есть. ',
-          op ? h('button', { class: 'sm primary', type: 'button', disabled: !iso, title: iso ? '' : 'Сначала подключите ISO', onclick: () => act({ action: 'install' }) },
+          op ? h('button', { class: 'sm primary', type: 'button', disabled: !ready, title: ready ? '' : 'Сначала подключите ISO', onclick: () => act({ action: 'install' }) },
             m.running ? '↻ Перезапустить с ISO' : '▶ Запустить с ISO') : null),
         step(3, false, 'Установите ОС в консоли VNC',
           m.cd_vnc_wait ? 'Машина ждёт подключения к консоли: установщик начнёт загружаться, когда вы её откроете. ' : '',
@@ -1548,7 +1550,8 @@ function isoTable(list) {
         h('div', { class: 'mono muted small', style: 'word-break:break-all' }, it.path),
         h('div', { class: 'row' },
           it.uploaded ? h('span', { class: 'pill run' }, 'загружен через веб') : h('span', { class: 'pill off' }, 'CBSD'),
-          !it.registered ? h('span', { class: 'pill warn', title: 'будет зарегистрирован при создании ВМ' }, 'не зарегистрирован') : null)),
+          !it.registered ? h('span', { class: 'pill warn', title: 'будет зарегистрирован при создании ВМ' }, 'не зарегистрирован') : null,
+          it.missing ? h('span', { class: 'pill warn', title: 'запись есть в CBSD, но файла нет' }, 'файл не найден') : null)),
       h('td', null, fmtBytes(it.size)),
       h('td', null, it.attached_to.length ? it.attached_to.map((j) => h('a', { href: '#/env/' + encodeURIComponent(j) }, j)).reduce((a, b) => [a, ', ', b]) : '—'),
       h('td', { class: 'actions' }, it.uploaded && can('admin') ? h('button', { class: 'danger sm', type: 'button', disabled: it.attached_to.length > 0,

@@ -223,8 +223,14 @@ func TestVMInstallFlow(t *testing.T) {
 	if resp, _ := view.do("GET", "/api/envs/build/media", nil, nil); resp.StatusCode != 400 {
 		t.Errorf("jail media: %d", resp.StatusCode)
 	}
-	if resp, m := oper.do("POST", "/api/envs/vm_debian/media", map[string]string{"action": "install"}, nil); resp.StatusCode != 422 || m["field"] != "iso" {
-		t.Errorf("install without ISO: %d %v", resp.StatusCode, m)
+	if resp, m := oper.do("POST", "/api/envs/vm_debian/media", map[string]string{"action": "install"}, nil); resp.StatusCode != 422 || m["field"] != "iso" || !strings.Contains(m["error"].(string), "не найден") {
+		t.Errorf("install with a missing ISO file: %d %v", resp.StatusCode, m)
+	}
+	if resp, m := oper.do("POST", "/api/envs/build/media", map[string]string{"action": "install"}, nil); resp.StatusCode != 400 {
+		t.Errorf("install into a jail: %d %v", resp.StatusCode, m)
+	}
+	if resp, m := oper.do("POST", "/api/envs/vm_freebsd/media", map[string]string{"action": "attach", "iso": "iso-Gone-1.0.iso"}, nil); resp.StatusCode != 422 {
+		t.Errorf("attach missing file: %d %v", resp.StatusCode, m)
 	}
 	for _, bad := range []string{"nosuch", "x;reboot"} {
 		if resp, m := oper.do("POST", "/api/envs/vm_freebsd/media", map[string]string{"action": "attach", "iso": bad}, nil); resp.StatusCode != 422 {
@@ -239,7 +245,7 @@ func TestVMInstallFlow(t *testing.T) {
 		{map[string]string{"action": "attach", "iso": "web-alpine-3.20"}, []string{
 			"media mode=eject jname=vm_freebsd", "media mode=attach name=web-alpine-3.20", "bset jname=vm_freebsd vm_iso_path=web-alpine-3.20"}},
 		{map[string]string{"action": "install"}, []string{
-			"bstop jname=vm_freebsd", "bset jname=vm_freebsd vm_boot=cd", "bstart jname=vm_freebsd"}},
+			"bstop jname=vm_freebsd", "bset jname=vm_freebsd vm_boot=cd vm_iso_path=iso-FreeBSD-14.3", "bstart jname=vm_freebsd"}},
 		{map[string]string{"action": "finish"}, []string{
 			"bset jname=vm_freebsd vm_boot=hdd vm_iso_path=0", "media mode=eject jname=vm_freebsd", "bstart jname=vm_freebsd"}},
 		{map[string]string{"action": "eject"}, []string{"bset jname=vm_freebsd vm_iso_path=0"}},

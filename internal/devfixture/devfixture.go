@@ -175,6 +175,7 @@ func Build(dir string) error {
 		fmt.Sprintf(`INSERT INTO media (name,path,type,jname,size) VALUES
 			('iso-FreeBSD-14.3','%[1]s/FreeBSD-14.3.iso','iso','vm_freebsd',1288490188),
 			('web-alpine-3.20','%[1]s/upload/alpine-3.20.iso','iso','-',%[2]d),
+			('iso-Gone-1.0.iso','%[1]s/Gone-1.0.iso','iso','vm_debian',0),
 			('hdd-vm_freebsd','/usr/jails/vm/vm_freebsd/dsk1.vhd','hdd','vm_freebsd',21474836480)`, iso, len(FakeISO())),
 	}); err != nil {
 		return err
@@ -183,6 +184,10 @@ func Build(dir string) error {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(iso, "upload", "alpine-3.20.iso"), FakeISO(), 0o644); err != nil {
+		return err
+	}
+	// iso-Gone-1.0.iso stays registered without a file.
+	if err := os.WriteFile(filepath.Join(iso, "FreeBSD-14.3.iso"), FakeISO(), 0o644); err != nil {
 		return err
 	}
 	// bstart.log of a VM that failed to start, as CBSD writes it.

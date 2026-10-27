@@ -120,18 +120,26 @@ func (s *Server) handleVMMediaAction(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		attached := false
-		for _, it := range list {
-			attached = attached || contains(it.AttachedTo, e.Name)
+		var iso *isoInfo
+		for i := range list {
+			if contains(list[i].AttachedTo, e.Name) && (iso == nil || iso.Missing) {
+				iso = &list[i]
+			}
 		}
-		if !attached {
+		if iso == nil {
 			writeFieldErr(w, &cbsd.FieldError{Field: "iso", Msg: "сначала подключите ISO"})
+			return
+		}
+		if iso.Missing || !cbsd.ValidMediaName(iso.Media) {
+			writeFieldErr(w, &cbsd.FieldError{Field: "iso", Msg: "файл подключённого образа не найден: " + iso.Path + ". Подключите другой ISO"})
 			return
 		}
 		if e.Status == 1 {
 			steps = append(steps, []string{stop, jname})
 		}
-		steps = append(steps, []string{set, jname, "vm_boot=cd"}, []string{start, jname})
+		// vm_iso_path must name the attached media: when it does not, bstart
+		// tries to download the profile's ISO instead.
+		steps = append(steps, []string{set, jname, "vm_boot=cd", "vm_iso_path=" + iso.Media}, []string{start, jname})
 		title = "Установка ОС: запуск " + e.Name + " с ISO"
 	case "finish":
 		if e.Status == 1 {
