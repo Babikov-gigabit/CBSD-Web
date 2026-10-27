@@ -129,6 +129,15 @@ func (s *Server) rollback(w http.ResponseWriter, r *http.Request, e *cbsd.Env, s
 		steps = append(steps, append(cl, "clone_method=rsync"))
 	}
 	steps = append(steps, args)
+	var finally [][]string
+	if e.Status == 1 {
+		// jclone refuses a running jail and rolling back a live filesystem is
+		// unsafe: stop first, start again afterwards (also if a step fails).
+		stop, _ := cbsd.ActionArgs(e.Emulator, cbsd.ActStop, e.Name)
+		start, _ := cbsd.ActionArgs(e.Emulator, cbsd.ActStart, e.Name)
+		steps = append([][]string{stop}, steps...)
+		finally = [][]string{start}
+	}
 
 	// Snapshots newer than the target are destroyed by 'zfs rollback -r'.
 	var lost []snaphist.Lost
@@ -150,7 +159,7 @@ func (s *Server) rollback(w http.ResponseWriter, r *http.Request, e *cbsd.Env, s
 	if saveAs != "" {
 		title += " (текущее → " + saveAs + ")"
 	}
-	s.submitSteps(w, r, title, e.Name, steps, func(err error) {
+	s.submitSteps(w, r, title, e.Name, steps, finally, func(err error) {
 		if err == nil {
 			s.hist.Add(e.Name, snaphist.Event{Type: "rollback", At: time.Now(), User: user, To: snap, Lost: lost, Branch: saveAs})
 		}

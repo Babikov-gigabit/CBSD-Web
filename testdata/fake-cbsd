@@ -20,5 +20,5 @@ for i in 1 2 3; do
 	echo "step $i/3 ..."
 	sleep "${FAKE_CBSD_DELAY:-0.3}"
 done
-case "$*" in *jname=fail*) echo "error: simulated failure" >&2; exit 1 ;; esac
+case "$*" in *jname=fail*|*new=fail\ *|*new=fail) echo "error: simulated failure" >&2; exit 1 ;; esac
 echo done

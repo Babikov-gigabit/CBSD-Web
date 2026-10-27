@@ -238,7 +238,7 @@ func (s *Server) handleEnv(w http.ResponseWriter, r *http.Request) {
 
 // submit starts a cbsd job, audits it and answers 202 with the job.
 func (s *Server) submit(w http.ResponseWriter, r *http.Request, title, target string, args []string, cleanup func()) {
-	s.submitSteps(w, r, title, target, [][]string{args}, func(error) {
+	s.submitSteps(w, r, title, target, [][]string{args}, nil, func(error) {
 		if cleanup != nil {
 			cleanup()
 		}
@@ -246,20 +246,36 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, title, target st
 }
 
 // submitSteps runs several cbsd commands in one job, stopping at the first
-// failure. onDone (if set) always runs with the job's result.
-func (s *Server) submitSteps(w http.ResponseWriter, r *http.Request, title, target string, steps [][]string, onDone func(error)) {
+// failure. finally runs after the steps whatever happened (e.g. starting a
+// jail that the steps stopped); onDone (if set) gets the job's result.
+func (s *Server) submitSteps(w http.ResponseWriter, r *http.Request, title, target string, steps, finally [][]string, onDone func(error)) {
 	rc := sessionFrom(r)
 	run := func(ctx context.Context, out io.Writer) (err error) {
 		if onDone != nil {
 			defer func() { onDone(err) }()
 		}
-		for _, args := range steps {
+		step := func(ctx context.Context, args []string) error {
 			fmt.Fprintf(out, "$ cbsd %s\n", strings.Join(args, " "))
 			st := &ansiStripper{w: out}
 			err := s.runner.Stream(ctx, st, args...)
 			st.Flush()
 			if err != nil {
 				return fmt.Errorf("cbsd %s: %w", args[0], err)
+			}
+			return nil
+		}
+		defer func() {
+			// Runs even after a cancel, so a stopped jail comes back up.
+			fctx := context.WithoutCancel(ctx)
+			for _, args := range finally {
+				if ferr := step(fctx, args); ferr != nil && err == nil {
+					err = ferr
+				}
+			}
+		}()
+		for _, args := range steps {
+			if err := step(ctx, args); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -466,7 +482,13 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 		writeFieldErr(w, err)
 		return
 	}
-	s.submit(w, r, "Клонирование "+e.Name+" → "+req.New, e.Name, args, nil)
+	steps, finally := [][]string{args}, [][]string(nil)
+	if e.Emulator == "jail" && e.Status == 1 {
+		// jclone refuses a running jail; stop it for a consistent copy and start it again.
+		steps = [][]string{{"jstop", "jname=" + e.Name}, args}
+		finally = [][]string{{"jstart", "jname=" + e.Name}}
+	}
+	s.submitSteps(w, r, "Клонирование "+e.Name+" → "+req.New, e.Name, steps, finally, nil)
 }
 
 func (s *Server) requireInitialized(w http.ResponseWriter) bool {

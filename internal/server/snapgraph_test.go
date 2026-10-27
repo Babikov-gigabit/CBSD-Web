@@ -42,9 +42,15 @@ func TestSnapshotGraphAndRollbackBranch(t *testing.T) {
 		t.Fatalf("rollback: %d %v", resp.StatusCode, m)
 	}
 	out := jobOutput(t, admin, m)
-	i, j := strings.Index(out, "jclone old=web1 new=web1_saved host_hostname=web1-saved ip4_addr=DHCP clone_method=rsync"), strings.Index(out, "jsnapshot mode=rollback jname=web1 snapname=web20251001093000")
-	if i < 0 || j < i {
-		t.Fatalf("steps out of order: %q", out)
+	// web1 is running: stop, copy, roll back, start again.
+	last := -1
+	for _, want := range []string{"$ cbsd jstop jname=web1", "jclone old=web1 new=web1_saved host_hostname=web1-saved ip4_addr=DHCP clone_method=rsync",
+		"jsnapshot mode=rollback jname=web1 snapname=web20251001093000", "$ cbsd jstart jname=web1"} {
+		i := strings.Index(out, want)
+		if i <= last {
+			t.Fatalf("step %q missing or out of order: %q", want, out)
+		}
+		last = i
 	}
 	_, g = view.do("GET", "/api/envs/web1/snapshots/graph", nil, nil)
 	hist := g["history"].([]any)
@@ -55,5 +61,28 @@ func TestSnapshotGraphAndRollbackBranch(t *testing.T) {
 	lost := ev["lost"].([]any)
 	if ev["to"] != "web20251001093000" || ev["branch"] != "web1_saved" || ev["user"] != "admin" || len(lost) != 1 || lost[0].(map[string]any)["name"] != "before-upgrade" {
 		t.Errorf("event: %v", ev)
+	}
+}
+
+func TestCloneRunningJail(t *testing.T) {
+	_, newClient := setup(t)
+	oper := newClient("oper")
+	resp, m := oper.do("POST", "/api/envs/web1/clone", map[string]string{"new": "web1copy"}, nil)
+	if resp.StatusCode != 202 {
+		t.Fatalf("clone: %d %v", resp.StatusCode, m)
+	}
+	out := jobOutput(t, oper, m)
+	a, b, c := strings.Index(out, "$ cbsd jstop jname=web1"), strings.Index(out, "$ cbsd jclone old=web1"), strings.Index(out, "$ cbsd jstart jname=web1")
+	if a < 0 || b < a || c < b {
+		t.Fatalf("clone steps: %q", out)
+	}
+	// A failing step still starts the jail again.
+	resp, m = oper.do("POST", "/api/envs/web1/clone", map[string]string{"new": "fail"}, nil)
+	if resp.StatusCode != 202 {
+		t.Fatalf("clone fail: %d %v", resp.StatusCode, m)
+	}
+	res := waitJob(t, oper, m["job"].(map[string]any)["id"].(string))
+	if out := res["output"].(string); res["job"].(map[string]any)["state"] != "failed" || !strings.Contains(out, "$ cbsd jstart jname=web1") {
+		t.Fatalf("failed clone must restart: %v %q", res["job"], out)
 	}
 }

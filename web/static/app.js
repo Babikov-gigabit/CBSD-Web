@@ -909,7 +909,7 @@ function snapshotCard(e) {
       const newer = i >= 0 ? order.slice(i + 1) : [];
       parts.push(h('div', { class: 'banner warn' }, 'Данные вернутся к состоянию снимка ', h('b', null, snap), '. Изменения после него будут потеряны',
         newer.length ? [', а более новые снимки удалены: ', h('b', null, newer.join(', '))] : '', '. ',
-        e.status === 1 ? 'Окружение запущено: лучше сначала остановить его.' : ''));
+        e.status === 1 ? 'Окружение запущено: на время отката оно будет остановлено и затем запущено снова.' : ''));
       if (e.emulator === 'jail') {
         saveName = h('input', { value: e.jname + '_' + new Date().toISOString().slice(0, 10).replace(/-/g, ''), autocomplete: 'off', spellcheck: 'false' });
         saveBox = h('input', { type: 'checkbox', id: 'save_branch', checked: true });
@@ -1162,7 +1162,7 @@ function cloneEnv(e) {
   const fields = [{ name: 'new', label: 'Имя копии', value: e.jname + '_clone', full: true }];
   if (e.emulator === 'jail') fields.push({ name: 'host_hostname', label: 'Hostname копии', full: true, help: 'по умолчанию — имя копии' });
   const f = buildForm(fields);
-  modal('Клонировать ' + e.jname, h('div', null, e.status === 1 ? h('div', { class: 'banner warn' }, 'Рекомендуется остановить окружение перед клонированием.') : null, f.form), [
+  modal('Клонировать ' + e.jname, h('div', null, e.status === 1 ? h('div', { class: 'banner info' }, e.emulator === 'jail' ? 'Клетка запущена: на время копирования она будет остановлена и затем запущена снова.' : 'Рекомендуется остановить окружение перед клонированием.') : null, f.form), [
     { text: 'Отмена' },
     { text: 'Клонировать', class: 'primary', onClick: async () => {
       try { await runAction('POST', '/api/envs/' + encodeURIComponent(e.jname) + '/clone', f.values()); } catch (err) { f.showError(err); return false; }
