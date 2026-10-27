@@ -150,7 +150,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	if s.db.Exists("local") {
 		envs, err := s.db.Envs(ctx, "")
 		if err != nil {
-			res["db_error"] = err.Error()
+			res["db_error"] = dbErrorMessage(err)
 		}
 		c := map[string]*counts{"jail": {}, "bhyve": {}, "xen": {}, "qemu": {}}
 		for _, e := range envs {
@@ -192,7 +192,7 @@ func (s *Server) handleEnvs(w http.ResponseWriter, r *http.Request) {
 	}
 	envs, err := s.db.Envs(r.Context(), emu)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "ошибка чтения базы CBSD: "+err.Error())
+		writeErr(w, http.StatusInternalServerError, dbErrorMessage(err))
 		return
 	}
 	showHidden := r.URL.Query().Get("hidden") == "1"
@@ -217,7 +217,7 @@ func (s *Server) loadEnv(w http.ResponseWriter, r *http.Request) *cbsd.Env {
 	}
 	e, err := s.db.Env(r.Context(), name)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "ошибка чтения базы CBSD: "+err.Error())
+		writeErr(w, http.StatusInternalServerError, dbErrorMessage(err))
 		return nil
 	}
 	if e == nil {
@@ -682,6 +682,12 @@ func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 	add(check{ID: "initenv", Title: "CBSD инициализирован (initenv)", OK: s.db.Exists("local"),
 		Detail: filepath.Join(s.cfg.Workdir, "var/db/local.sqlite"), Hint: "Запустите мастер первичной настройки ниже."})
 
+	if s.db.Exists("local") {
+		err := s.db.Readable(ctx, "local")
+		add(check{ID: "db_access", Title: "Доступ веб-интерфейса к базам CBSD", OK: err == nil, Detail: errText(err),
+			Hint: dbAccessHint})
+	}
+
 	rc, _ := os.ReadFile("/etc/rc.conf")
 	enabled := strings.Contains(string(rc), `cbsdd_enable="YES"`) || strings.Contains(string(rc), "cbsdd_enable=YES")
 	add(check{ID: "rcconf", Title: "Автозапуск cbsdd", OK: enabled, Hint: "sysrc cbsdd_enable=YES (initenv делает это сам)."})
@@ -690,6 +696,23 @@ func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 	add(check{ID: "vmm", Title: "Модуль vmm (bhyve)", OK: hi.VMMLoaded, Hint: "kldload vmm; sysrc kld_list+=vmm — нужно только для bhyve."})
 
 	writeJSON(w, http.StatusOK, map[string]any{"checks": checks, "workdir": s.cfg.Workdir, "initialized": s.db.Exists("local")})
+}
+
+const dbAccessHint = "Базы CBSD доступны только группе cbsd. Добавьте в неё пользователя веб-интерфейса и перезапустите службу: pw groupmod cbsd -m cbsdweb && service cbsdweb restart"
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// dbErrorMessage turns a database error into an actionable message for the UI.
+func dbErrorMessage(err error) string {
+	if cbsd.IsPermission(err) {
+		return "нет прав на чтение баз CBSD (" + err.Error() + "). " + dbAccessHint
+	}
+	return "ошибка чтения базы CBSD: " + err.Error()
 }
 
 func firstNonEmpty(a ...string) string {

@@ -363,6 +363,7 @@ async function pageDashboard() {
     const node = d.node || {};
     const content = [];
     if (!d.initialized) content.push(h('div', { class: 'banner warn' }, 'CBSD ещё не инициализирован в ', h('code', null, d.workdir), '. ', h('a', { href: '#/setup' }, 'Открыть мастер настройки →')));
+    if (d.db_error) content.push(h('div', { class: 'banner err' }, d.db_error, ' ', h('a', { href: '#/setup' }, 'Диагностика →')));
     if (d.cbsd_error) content.push(h('div', { class: 'banner err' }, 'Не удаётся запустить cbsd: ', h('code', null, d.cbsd_error), ' ', h('a', { href: '#/setup' }, 'Диагностика →')));
     const stat = (label, val, sub, href) => h(href ? 'a' : 'div', { class: 'card stat', href }, h('div', { class: 'label' }, label), h('div', { class: 'value' }, val), h('div', { class: 'sub' }, sub));
     const cnt = (k) => c[k] || { total: 0, running: 0 };

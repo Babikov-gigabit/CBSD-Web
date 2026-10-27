@@ -45,6 +45,10 @@ say "creating user ${USER}"
 if ! pw usershow "${USER}" >/dev/null 2>&1; then
 	pw useradd -n "${USER}" -c "CBSD web interface" -d /nonexistent -s /usr/sbin/nologin -w no
 fi
+# CBSD keeps its SQLite databases (mode 0660, WAL) readable only by group cbsd.
+if pw groupshow cbsd >/dev/null 2>&1 && ! id -Gn "${USER}" | tr ' ' '\n' | grep -qx cbsd; then
+	pw groupmod cbsd -m "${USER}"
+fi
 
 say "installing files"
 install -m 0555 -o root -g wheel "$src" "$BIN"

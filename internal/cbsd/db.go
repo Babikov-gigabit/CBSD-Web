@@ -3,7 +3,9 @@ package cbsd
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -37,9 +39,33 @@ func NewDB(workdir string) *DB {
 func (d *DB) path(name string) string { return filepath.Join(d.workdir, "var", "db", name+".sqlite") }
 
 // Exists reports whether a CBSD database file exists (workdir initialized).
+// A file that is present but unreadable (e.g. permission denied) counts as
+// existing, so callers report the real error instead of "not initialized".
 func (d *DB) Exists(name string) bool {
 	_, err := os.Stat(d.path(name))
-	return err == nil
+	return err == nil || !errors.Is(err, fs.ErrNotExist)
+}
+
+// Readable checks that a CBSD database can actually be opened and queried.
+func (d *DB) Readable(ctx context.Context, name string) error {
+	c, err := d.conn(name)
+	if err != nil {
+		return err
+	}
+	var n int
+	return c.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master").Scan(&n)
+}
+
+// IsPermission reports whether err comes from missing filesystem permissions.
+func IsPermission(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, fs.ErrPermission) {
+		return true
+	}
+	m := strings.ToLower(err.Error())
+	return strings.Contains(m, "permission denied") || strings.Contains(m, "unable to open database") || strings.Contains(m, "readonly database")
 }
 
 func (d *DB) conn(name string) (*sql.DB, error) {
