@@ -20,6 +20,7 @@ import (
 	"github.com/cbsd-web/cbsd-web/internal/audit"
 	"github.com/cbsd-web/cbsd-web/internal/auth"
 	"github.com/cbsd-web/cbsd-web/internal/config"
+	"github.com/cbsd-web/cbsd-web/internal/hoststat"
 	"github.com/cbsd-web/cbsd-web/internal/server"
 )
 
@@ -85,6 +86,10 @@ func main() {
 }
 
 func serve(cfg *config.Config) error {
+	// Development only (make dev): stand-ins for ifconfig, netstat, ps and zfs.
+	if d := os.Getenv("CBSDWEB_DEV_TOOLS"); d != "" {
+		hoststat.UseToolsDir(d)
+	}
 	if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
 		return err
 	}

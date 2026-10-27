@@ -134,6 +134,8 @@ func SnapshotArgs(emulator, mode, name, snap string) ([]string, error) {
 	}
 	switch mode {
 	case "create", "destroy", "rollback":
+	case "destroyall":
+		return []string{cmd, "mode=destroyall", "jname=" + name}, nil
 	default:
 		return nil, errors.New("invalid snapshot mode")
 	}
@@ -164,4 +166,41 @@ func CloneArgs(emulator, from, to, hostname string) ([]string, error) {
 		return []string{"bclone", "old=" + from, "new=" + to}, nil
 	}
 	return nil, errors.New("clone is supported for jails and bhyve VMs")
+}
+
+// Snapshot is one CBSD snapshot as listed by 'jsnapshot mode=list'.
+type Snapshot struct {
+	Name    string `json:"name"`    // CBSD snapname (the part after @)
+	Dataset string `json:"dataset"` // ZFS dataset the snapshot belongs to
+	Created string `json:"created"`
+	Refer   string `json:"refer"`
+}
+
+// ListSnapshotArgs asks CBSD for name, creation time and size without a header.
+func ListSnapshotArgs(name string) []string {
+	return []string{"jsnapshot", "mode=list", "jname=" + name, "header=0", "display=snapname,creation,refer"}
+}
+
+// ParseSnapshots parses ListSnapshotArgs output: "pool/ds@snap 2025-10-01__10:00 1.2G".
+func ParseSnapshots(out string) []Snapshot {
+	var res []Snapshot
+	for _, line := range strings.Split(StripANSI(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
+		}
+		ds, snap, ok := strings.Cut(f[0], "@")
+		if !ok || ds == "" || snap == "" {
+			continue
+		}
+		s := Snapshot{Name: snap, Dataset: ds}
+		if len(f) > 1 {
+			s.Created = strings.Replace(f[1], "__", " ", 1)
+		}
+		if len(f) > 2 {
+			s.Refer = f[2]
+		}
+		res = append(res, s)
+	}
+	return res
 }

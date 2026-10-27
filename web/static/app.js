@@ -244,6 +244,7 @@ const routes = [
   [/^xen$/, () => pageEnvs('xen'), 'xen'],
   [/^env\/([A-Za-z0-9_.-]+)(?:\/(config|limits))?$/, (m) => pageEnv(m[1], m[2] || ''), null],
   [/^env\/([A-Za-z0-9_.-]+)\/terminal$/, (m) => pageTerminal(m[1]), null],
+  [/^env\/([A-Za-z0-9_.-]+)\/vnc$/, (m) => pageVNC(m[1]), null],
   [/^images$/, pageImages, 'images'],
   [/^bases$/, pageBases, 'bases'],
   [/^nodes$/, pageNodes, 'nodes'],
@@ -483,6 +484,7 @@ function envButtons(e, busyJob, compact) {
 async function pageEnv(name, tab) {
   const main = $('#main');
   const enc = encodeURIComponent(name);
+  const keep = {};
   const render = async () => {
     const { env: e, busy_job: busyJob } = await api('GET', '/api/envs/' + enc);
     const back = { jail: '#/jails', bhyve: '#/vms', xen: '#/xen' }[e.emulator] || '#/';
@@ -509,32 +511,12 @@ async function pageEnv(name, tab) {
     }
     if (tab === 'config') return fill(main, head, await jailConfigTab(e));
     if (tab === 'limits') return fill(main, head, await jailLimitsTab(e));
-    fill(main, head, envOverview(e));
+    fill(main, head, envOverview(e, keep));
   };
   await render();
   // Only the overview polls: the edit tabs must not reset what the user typed.
   if (!tab) autoRefresh(render, 6000);
   else refreshFn = render;
-}
-
-function envOverview(e) {
-  const info = [
-    ['Тип', EMU_TITLE[e.emulator] || e.emulator], ['IP', e.ip4_addr || '—'], ['Hostname', e.host_hostname || '—'],
-    ['Путь', e.path || '—'], ['Интерфейс', e.interface || '—'], ['Автозапуск', e.astart ? 'да' : 'нет'],
-    ['Защита от удаления', e.protected ? 'да' : 'нет'],
-  ];
-  if (e.emulator === 'jail') info.push(['JID', e.jid ? String(e.jid) : '—'], ['База', e.ver || '—'], ['Режим базы', e.baserw ? 'rw (своя копия)' : 'ro (общая)'], ['VNET', e.vnet ? 'да' : 'нет']);
-  else info.push(['ОС', e.vm_os_type || '—'], ['Профиль', e.vm_os_profile || '—'], ['CPU', String(e.vm_cpus || '—')], ['RAM', fmtBytes(e.vm_ram)],
-    ['VNC', e.vnc_port ? (e.vnc_bind || '127.0.0.1') + ':' + e.vnc_port : 'не назначен']);
-  const content = [h('div', { class: 'grid cols-2' },
-    h('div', { class: 'card' }, h('h2', null, 'Параметры'), h('dl', { class: 'kv' }, info.map(([k, v]) => [h('dt', null, k), h('dd', null, v)]))),
-    e.emulator === 'jail' || e.emulator === 'bhyve' ? snapshotCard(e) : null)];
-  if (e.emulator !== 'jail' && e.vnc_port) {
-    content.push(h('div', { class: 'card mt' }, h('h2', null, 'Консоль VNC'),
-      h('p', { class: 'muted' }, 'Подключитесь VNC-клиентом. Если VNC слушает 127.0.0.1, используйте SSH-туннель:'),
-      h('pre', { class: 'mono' }, 'ssh -L 5900:127.0.0.1:' + e.vnc_port + ' <пользователь>@' + location.hostname + '\n# затем откройте VNC на localhost:5900')));
-  }
-  return content;
 }
 
 // Sticky bar with the change counter and save/reset buttons for an edit tab.
@@ -668,6 +650,60 @@ async function jailLimitsTab(e) {
       h('tbody', null, rows))), bar.bar);
 }
 
+// ---------- VNC console ----------
+async function pageVNC(name) {
+  const main = $('#main');
+  const enc = encodeURIComponent(name);
+  const backBtn = h('a', { class: 'btn', href: '#/env/' + enc }, '← К машине');
+  const info = await api('GET', '/api/envs/' + enc + '/vnc');
+  if (!info.console || !info.port || !info.running) {
+    const why = !info.console ? 'Консоль доступна администратору (параметр terminal_role в конфиге).'
+      : !info.port ? 'VNC для этой машины не назначен.' : 'Машина не запущена.';
+    return fill(main, pageHead('Консоль: ' + name, backBtn), h('div', { class: 'banner warn' }, why));
+  }
+  const { default: RFB } = await import('/vendor/novnc/core/rfb.js');
+  const pill = h('span', { class: 'pill run' }, 'подключение…');
+  const setPill = (cls, text) => { pill.className = 'pill ' + cls; pill.textContent = text; };
+  const screen = h('div', { class: 'vnc-box' });
+  let rfb = null;
+  const btn = (text, title, fn) => h('button', { class: 'sm', type: 'button', title, onclick: fn }, text);
+  const scaleBox = h('input', { type: 'checkbox', id: 'vnc_scale', checked: true, onchange: () => { if (rfb) rfb.scaleViewport = scaleBox.checked; } });
+  const reconnect = btn('Переподключить', '', () => connect());
+  reconnect.hidden = true;
+  fill(main, pageHead('Консоль: ' + name, pill, backBtn),
+    h('div', { class: 'row', style: 'margin-bottom:10px' },
+      btn('Ctrl+Alt+Del', 'Отправить Ctrl+Alt+Del', () => rfb && rfb.sendCtrlAltDel()),
+      btn('Во весь экран', '', () => screen.requestFullscreen && screen.requestFullscreen()),
+      h('label', { class: 'row small', for: 'vnc_scale' }, scaleBox, 'Вписать в окно'),
+      reconnect, h('span', { style: 'flex:1' }),
+      h('span', { class: 'muted small mono' }, (info.bind || '127.0.0.1') + ':' + info.port + (info.resolution ? ' · ' + info.resolution : ''))),
+    screen);
+  const connect = () => {
+    if (rfb) { const old = rfb; rfb = null; old.disconnect(); }
+    fill(screen);
+    setPill('run', 'подключение…');
+    reconnect.hidden = true;
+    const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/api/envs/' + enc + '/vnc/ws?' + new URLSearchParams({ csrf: state.csrf });
+    const r = new RFB(screen, url, { wsProtocols: ['binary'], credentials: info.password ? { password: info.password } : undefined });
+    rfb = r;
+    r.scaleViewport = scaleBox.checked;
+    r.background = '#0d1117';
+    r.addEventListener('connect', () => { setPill('on', 'подключено'); r.focus(); });
+    r.addEventListener('disconnect', (ev) => {
+      if (rfb !== r) return;
+      setPill('off', ev.detail.clean ? 'отключено' : 'соединение потеряно');
+      reconnect.hidden = false;
+    });
+    r.addEventListener('securityfailure', (ev) => toast('VNC: ошибка аутентификации' + (ev.detail.reason ? ': ' + ev.detail.reason : ''), 'err'));
+    r.addEventListener('credentialsrequired', () => {
+      const inp = h('input', { type: 'password', autocomplete: 'off', placeholder: 'Пароль VNC' });
+      modal('Пароль VNC', h('div', null, inp), [{ text: 'Отмена' }, { text: 'Подключить', class: 'primary', onClick: () => r.sendCredentials({ password: inp.value }) }]);
+    });
+  };
+  connect();
+  state.cleanup = () => { const r = rfb; rfb = null; if (r) r.disconnect(); };
+}
+
 // ---------- terminal ----------
 let xtermLoading = null;
 function loadXterm() {
@@ -736,32 +772,196 @@ async function pageTerminal(name) {
   state.cleanup = () => { window.removeEventListener('resize', onResize); const w = ws; ws = null; if (w) w.close(); term.dispose(); };
 }
 
-function snapshotCard(e) {
-  const out = h('pre', { class: 'log short' }, 'Нажмите «Показать», чтобы получить список снимков (требуется ZFS).');
-  const url = '/api/envs/' + encodeURIComponent(e.jname) + '/snapshots';
-  const load = async () => {
-    out.textContent = 'Загрузка…';
-    try { const r = await api('GET', url); out.textContent = r.error ? r.error + '\n' + (r.text || '') : r.text || 'Снимков нет'; } catch (err) { out.textContent = err.message; }
+function envOverview(e, keep) {
+  const info = [
+    ['Тип', EMU_TITLE[e.emulator] || e.emulator], ['IP', e.ip4_addr || '—'], ['Hostname', e.host_hostname || '—'],
+    ['Путь', e.path || '—'], ['Интерфейс', e.interface || '—'], ['Автозапуск', e.astart ? 'да' : 'нет'],
+    ['Защита от удаления', e.protected ? 'да' : 'нет'],
+  ];
+  if (e.emulator === 'jail') info.push(['JID', e.jid ? String(e.jid) : '—'], ['База', e.ver || '—'], ['Режим базы', e.baserw ? 'rw (своя копия)' : 'ro (общая)'], ['VNET', e.vnet ? 'да' : 'нет']);
+  else info.push(['ОС', e.vm_os_type || '—'], ['Профиль', e.vm_os_profile || '—'], ['CPU', String(e.vm_cpus || '—')], ['RAM', fmtBytes(e.vm_ram)]);
+  // Cards with their own state survive the periodic re-render of the page.
+  if (!keep.stats) keep.stats = statsCard(e);
+  keep.stats.update(e);
+  if ((e.emulator === 'jail' || e.emulator === 'bhyve') && !keep.snaps) keep.snaps = snapshotCard(e);
+  if (keep.snaps && keep.snaps.dirty) keep.snaps.load();
+  const vnc = e.emulator === 'bhyve' || e.emulator === 'xen' ? vncCard(e, keep) : null;
+  return [
+    h('div', { class: 'grid cols-2' },
+      h('div', { class: 'card' }, h('h2', null, 'Параметры'), h('dl', { class: 'kv' }, info.map(([k, v]) => [h('dt', null, k), h('dd', null, v)]))),
+      vnc, keep.stats.el),
+    keep.snaps ? keep.snaps.el : null,
+  ];
+}
+
+function copyBtn(text) {
+  return h('button', { class: 'sm icon', type: 'button', title: 'Скопировать', onclick: async () => {
+    try { await navigator.clipboard.writeText(text); toast('Скопировано', 'ok'); } catch (_) { toast('Не удалось скопировать: выделите текст вручную', 'err'); }
+  } }, '⧉');
+}
+
+function vncCard(e, keep) {
+  const enc = encodeURIComponent(e.jname);
+  if (!e.vnc_port) return h('div', { class: 'card' }, h('h2', null, 'Консоль VNC'), h('p', { class: 'muted' }, 'VNC для этой машины не назначен.'));
+  const bind = e.vnc_bind || '127.0.0.1';
+  const local = bind === '127.0.0.1' || bind === 'localhost' || bind === '::1';
+  const addr = (bind === '0.0.0.0' || bind === '::' ? location.hostname : bind) + ':' + e.vnc_port;
+  const pass = h('span', { class: 'mono' }, e.vnc_has_password ? '••••••••' : 'не задан');
+  const reveal = (pw) => { keep.vncPass = pw; fill(pass, pw || 'не задан', ' ', pw ? copyBtn(pw) : null); };
+  let showPass = null;
+  if (keep.vncPass != null) reveal(keep.vncPass);
+  else if (e.vnc_has_password && state.terminal) showPass = h('button', { class: 'sm', type: 'button', onclick: async () => {
+    try { const r = await api('GET', '/api/envs/' + enc + '/vnc'); reveal(r.password || ''); showPass.remove(); } catch (err) { fail(err); }
+  } }, 'Показать');
+  const tunnel = 'ssh -L 5900:127.0.0.1:' + e.vnc_port + ' <пользователь>@' + location.hostname;
+  return h('div', { class: 'card' }, h('h2', null, 'Консоль VNC'),
+    h('dl', { class: 'kv' },
+      h('dt', null, 'Адрес'), h('dd', null, h('span', { class: 'mono' }, local ? bind + ':' + e.vnc_port : addr), ' ', copyBtn(local ? bind + ':' + e.vnc_port : addr)),
+      h('dt', null, 'Порт'), h('dd', { class: 'mono' }, String(e.vnc_port)),
+      h('dt', null, 'Пароль'), h('dd', null, pass, ' ', showPass),
+      e.vnc_resolution ? [h('dt', null, 'Разрешение'), h('dd', null, e.vnc_resolution)] : null),
+    h('div', { class: 'row mt' },
+      state.terminal ? h('a', { class: 'btn primary' + (e.status === 1 ? '' : ' disabled'), href: e.status === 1 ? '#/env/' + enc + '/vnc' : null, title: e.status === 1 ? '' : 'Машина не запущена' }, '🖥 Открыть в браузере') : null),
+    local ? h('div', { class: 'mt' }, h('div', { class: 'muted small' }, 'VNC слушает только локальный адрес. Для внешнего клиента используйте SSH-туннель и подключайтесь к localhost:5900:'),
+      h('div', { class: 'row' }, h('code', { class: 'mono' }, tunnel), copyBtn(tunnel))) : null);
+}
+
+function fmtRate(bps) {
+  if (bps == null) return '';
+  return bps < 1 ? '0 Б/с' : fmtBytes(bps) + '/с';
+}
+
+function statsCard(e) {
+  const enc = encodeURIComponent(e.jname);
+  const body = h('div', null, h('div', { class: 'muted' }, 'Загрузка…'));
+  const el = h('div', { class: 'card' }, h('h2', null, 'Сеть и ресурсы'), body);
+  let prev = null;
+  let busy = false;
+  const update = async (env) => {
+    if (busy) return;
+    busy = true;
+    try {
+      const s = await api('GET', '/api/envs/' + enc + '/stats');
+      const dt = prev ? (s.at - prev.at) / 1000 : 0;
+      const rate = (n, key) => {
+        const p = prev && (prev.nics || []).find((x) => x.name === n.name);
+        return p && dt > 0 && n[key] >= p[key] ? (n[key] - p[key]) / dt : null;
+      };
+      const nics = s.nics || [];
+      const parts = [h('dl', { class: 'kv' },
+        h('dt', null, 'IP-адреса'), h('dd', { class: 'mono' }, (s.ips || []).length ? s.ips.join(', ') : '—'),
+        env.emulator === 'jail' ? [h('dt', null, 'Сетевой стек'), h('dd', null, s.vnet ? 'VNET (свой)' : 'общий с хостом, интерфейс ' + (s.interface || 'auto'))] : null)];
+      if (nics.length) {
+        parts.push(h('div', { class: 'table-wrap mt' }, h('table', { class: 'compact' },
+          h('thead', null, h('tr', null, h('th', null, 'Интерфейс на хосте'), h('th', null, 'Трафик: всего · сейчас'))),
+          h('tbody', null, nics.map((n) => h('tr', null,
+            h('td', null, h('div', { class: 'mono' }, n.name, n.up ? '' : ' (down)'), h('div', { class: 'muted small mono' }, n.mac), n.bridge ? h('div', { class: 'muted small' }, 'мост ' + n.bridge) : null),
+            h('td', null,
+              h('div', { title: 'Принято окружением' }, '↓ ', fmtBytes(n.rx_bytes), h('span', { class: 'muted small' }, ' · ' + (fmtRate(rate(n, 'rx_bytes')) || '…'))),
+              h('div', { title: 'Отправлено окружением' }, '↑ ', fmtBytes(n.tx_bytes), h('span', { class: 'muted small' }, ' · ' + (fmtRate(rate(n, 'tx_bytes')) || '…'))),
+              n.errs ? h('div', { class: 'small', style: 'color:var(--err)' }, 'ошибок: ' + n.errs) : null)))))));
+      } else if (s.nics_error) {
+        parts.push(h('p', { class: 'muted small' }, s.nics_error));
+      } else if (env.emulator === 'jail' && !s.vnet) {
+        parts.push(h('p', { class: 'muted small' }, 'Клетка без VNET работает на адресах интерфейса хоста, поэтому её трафик отдельно не учитывается. Включите VNET в конфигурации, чтобы видеть счётчики.'));
+      } else if (env.status === 1) {
+        parts.push(h('p', { class: 'muted small' }, 'Интерфейсы окружения на хосте не найдены.'));
+      }
+      const res = [];
+      if (s.procs) res.push(['CPU', s.procs.cpu_pct.toFixed(1) + ' %'], ['Память (RSS)', fmtBytes(s.procs.rss)],
+        ['Виртуальная память', fmtBytes(s.procs.vsz)], [env.emulator === 'jail' ? 'Процессов' : 'Процесс bhyve', String(s.procs.count)]);
+      if (s.disk) {
+        const total = s.disk.used + s.disk.avail;
+        res.push(['Диск', h('div', null, fmtBytes(s.disk.used) + ' из ' + fmtBytes(total) + ' (свободно ' + fmtBytes(s.disk.avail) + ')',
+          total ? h('div', { class: 'meter' }, h('i', { style: 'width:' + Math.min(100, Math.round(s.disk.used / total * 100)) + '%' })) : null,
+          h('div', { class: 'muted small mono' }, s.disk.name))]);
+      }
+      if (res.length) parts.push(h('h3', { class: 'mt' }, 'Потребление'), h('dl', { class: 'kv' }, res.map(([k, v]) => [h('dt', null, k), h('dd', null, v)])));
+      else if (env.status !== 1) parts.push(h('p', { class: 'muted small mt' }, 'Окружение остановлено.'));
+      parts.push(h('div', { class: 'muted small mt' }, 'Обновляется каждые 6 секунд; скорость считается между замерами.'));
+      fill(body, parts);
+      prev = s;
+    } catch (err) {
+      fill(body, h('div', { class: 'muted' }, err.message));
+    } finally { busy = false; }
   };
-  const snapOp = async (mode) => {
-    const nameIn = h('input', { placeholder: mode === 'create' ? 'необязательно: имя снимка' : 'имя снимка', autocomplete: 'off' });
-    const titles = { create: 'Создать снимок', rollback: 'Откатить к снимку', destroy: 'Удалить снимок' };
-    modal(titles[mode] + ' — ' + e.jname, h('div', null,
-      mode === 'rollback' ? h('div', { class: 'banner warn' }, 'Изменения после снимка будут потеряны. Окружение должно быть остановлено.') : null,
-      nameIn), [
+  return { el, update };
+}
+
+function snapshotCard(e) {
+  const enc = encodeURIComponent(e.jname);
+  const url = '/api/envs/' + enc + '/snapshots';
+  const body = h('div', null, h('div', { class: 'muted' }, 'Загрузка списка снимков…'));
+  const count = h('span', { class: 'tag' }, '…');
+  const card = { dirty: false };
+  const after = async (p) => { try { await p; card.dirty = true; } catch (err) { fail(err); } };
+  const snapOp = (mode, snap) => {
+    const titles = { create: 'Создать снимок', rollback: 'Откатить к снимку', destroy: 'Удалить снимок', destroyall: 'Удалить все снимки' };
+    let nameIn = null;
+    const parts = [];
+    if (mode === 'create') {
+      nameIn = h('input', { placeholder: 'необязательно: имя снимка (латиница, цифры, _.-)', autocomplete: 'off' });
+      parts.push(h('p', { class: 'muted small' }, 'Снимок фиксирует текущее состояние данных. Пустое имя — по дате и времени.'), nameIn);
+    } else if (mode === 'rollback') {
+      parts.push(h('div', { class: 'banner warn' }, 'Все изменения после снимка ', h('b', null, snap), ' будут потеряны, а более новые снимки удалены. ',
+        e.status === 1 ? 'Сначала остановите окружение.' : ''));
+    } else if (mode === 'destroy') {
+      parts.push(h('p', null, 'Снимок ', h('b', null, snap), ' будет удалён без возможности восстановления.'));
+    } else {
+      parts.push(h('div', { class: 'banner warn' }, 'Будут удалены все снимки ' + e.jname + '.'));
+    }
+    modal(titles[mode] + ' — ' + e.jname, h('div', null, parts), [
       { text: 'Отмена' },
-      { text: titles[mode], class: mode === 'create' ? 'primary' : 'danger', onClick: async () => {
-        await runAction('POST', url, { mode, snapname: nameIn.value.trim() });
-      } },
+      { text: titles[mode], class: mode === 'create' ? 'primary' : 'danger', onClick: () => after(runAction('POST', url, { mode, snapname: mode === 'create' ? nameIn.value.trim() : snap || '' })) },
     ]);
   };
-  return h('div', { class: 'card' }, h('h2', null, 'Снимки ZFS'),
-    h('div', { class: 'row', style: 'margin-bottom:10px' },
-      h('button', { class: 'sm', type: 'button', onclick: load }, 'Показать'),
-      can('operator') ? h('button', { class: 'sm', type: 'button', onclick: () => snapOp('create') }, 'Создать') : null,
-      can('admin') ? h('button', { class: 'sm', type: 'button', onclick: () => snapOp('rollback') }, 'Откатить') : null,
-      can('admin') ? h('button', { class: 'sm danger', type: 'button', onclick: () => snapOp('destroy') }, 'Удалить') : null),
-    out);
+  const load = async () => {
+    card.dirty = false;
+    fill(body, h('div', { class: 'muted' }, 'Загрузка списка снимков…'));
+    let r;
+    try { r = await api('GET', url); } catch (err) { fill(body, h('div', { class: 'muted' }, err.message)); return; }
+    const list = r.snapshots || [];
+    count.textContent = String(list.length);
+    if (!list.length) {
+      fill(body, r.error ? h('div', { class: 'banner warn' }, r.error) : null,
+        h('div', { class: 'empty' }, 'Снимков пока нет.', r.text ? h('pre', { class: 'mono small' }, r.text) : null));
+      return;
+    }
+    const rows = [];
+    for (const s of list) {
+      const loc = h('tr', { class: 'snap-loc', hidden: true }, h('td', { colspan: 5 },
+        h('dl', { class: 'kv' },
+          h('dt', null, 'Снимок ZFS'), h('dd', null, h('code', { class: 'mono' }, s.dataset + '@' + s.name), ' ', copyBtn(s.dataset + '@' + s.name)),
+          h('dt', null, 'Набор данных'), h('dd', { class: 'mono' }, s.dataset),
+          s.path ? [h('dt', null, 'Файлы снимка'), h('dd', null, h('code', { class: 'mono' }, s.path), ' ', copyBtn(s.path))] : null),
+        h('div', { class: 'muted small' }, s.path
+          ? 'Каталог доступен только для чтения: из него можно скопировать отдельные файлы, не откатывая всю клетку (например, cp ' + s.path + '/etc/rc.conf /tmp/).'
+          : 'Снимок диска ВМ; файлы внутри доступны после клонирования или отката.')));
+      rows.push(h('tr', null,
+        h('td', null, h('div', { class: 'mono' }, s.name)),
+        h('td', null, s.created || '—'),
+        h('td', null, s.refer || '—'),
+        h('td', null, s.used ? fmtBytes(s.used) : '—'),
+        h('td', { class: 'actions' }, h('div', { class: 'btn-group' },
+          h('button', { class: 'sm', type: 'button', onclick: () => { loc.hidden = !loc.hidden; } }, 'Расположение'),
+          can('admin') ? h('button', { class: 'sm', type: 'button', onclick: () => snapOp('rollback', s.name) }, 'Откатить') : null,
+          can('admin') ? h('button', { class: 'sm danger', type: 'button', onclick: () => snapOp('destroy', s.name) }, 'Удалить') : null))), loc);
+    }
+    fill(body, r.error ? h('div', { class: 'banner warn' }, r.error) : null,
+      h('div', { class: 'table-wrap' }, h('table', null,
+        h('thead', null, h('tr', null, h('th', null, 'Имя'), h('th', null, 'Создан'), h('th', { title: 'Объём данных на момент снимка' }, 'Данные'),
+          h('th', { title: 'Место, которое освободится при удалении снимка' }, 'Занимает'), h('th', null, ''))),
+        h('tbody', null, rows))));
+  };
+  card.el = h('section', { class: 'card mt' },
+    h('div', { class: 'row', style: 'margin-bottom:12px' }, h('h2', { style: 'margin:0' }, 'Снимки ZFS'), count, h('span', { style: 'flex:1' }),
+      h('button', { class: 'sm', type: 'button', onclick: load }, '↻ Обновить'),
+      can('operator') ? h('button', { class: 'sm primary', type: 'button', onclick: () => snapOp('create') }, '+ Создать снимок') : null,
+      can('admin') ? h('button', { class: 'sm danger', type: 'button', onclick: () => snapOp('destroyall') }, 'Удалить все') : null),
+    body);
+  card.load = load;
+  load();
+  return card;
 }
 
 function editEnv(e) {

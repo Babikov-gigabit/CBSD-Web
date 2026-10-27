@@ -19,6 +19,7 @@ import (
 	"github.com/cbsd-web/cbsd-web/internal/audit"
 	"github.com/cbsd-web/cbsd-web/internal/auth"
 	"github.com/cbsd-web/cbsd-web/internal/cbsd"
+	"github.com/cbsd-web/cbsd-web/internal/hoststat"
 )
 
 // ---------- session ----------
@@ -344,15 +345,41 @@ func (s *Server) handleSnapshotList(w http.ResponseWriter, r *http.Request) {
 	if e == nil {
 		return
 	}
-	cmd := map[string]string{"jail": "jsnapshot", "bhyve": "bsnapshot"}[e.Emulator]
-	if cmd == "" {
+	if e.Emulator != "jail" && e.Emulator != "bhyve" {
 		writeJSON(w, http.StatusOK, map[string]any{"supported": false})
 		return
 	}
-	out, err := s.runner.Output(r.Context(), 30*time.Second, cmd, "mode=list", "jname="+e.Name)
-	res := map[string]any{"supported": true, "text": out}
+	out, err := s.runner.Output(r.Context(), 60*time.Second, cbsd.ListSnapshotArgs(e.Name)...)
+	snaps := cbsd.ParseSnapshots(out)
+	res := map[string]any{"supported": true}
 	if err != nil {
 		res["error"] = firstLine(out, err)
+	}
+	type item struct {
+		cbsd.Snapshot
+		Path string `json:"path,omitempty"` // browsable copy of a jail snapshot
+		Used uint64 `json:"used,omitempty"` // space only this snapshot holds
+	}
+	items := make([]item, 0, len(snaps))
+	used := map[string]map[string]uint64{}
+	mounts := map[string]string{}
+	for _, sn := range snaps {
+		it := item{Snapshot: sn}
+		if _, ok := used[sn.Dataset]; !ok {
+			used[sn.Dataset] = hoststat.SnapshotUsed(r.Context(), sn.Dataset)
+			if ds, err := hoststat.DatasetOf(r.Context(), sn.Dataset); err == nil && ds != nil {
+				mounts[sn.Dataset] = ds.Mountpoint
+			}
+		}
+		it.Used = used[sn.Dataset][sn.Dataset+"@"+sn.Name]
+		if mp := mounts[sn.Dataset]; e.Emulator == "jail" && strings.HasPrefix(mp, "/") {
+			it.Path = mp + "/.zfs/snapshot/" + sn.Name
+		}
+		items = append(items, it)
+	}
+	res["snapshots"] = items
+	if len(snaps) == 0 && err == nil {
+		res["text"] = out
 	}
 	writeJSON(w, http.StatusOK, res)
 }
@@ -376,6 +403,9 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "откат и удаление снимков доступны только администратору")
 		return
 	}
+	if req.Mode == "destroyall" {
+		req.SnapName = "*"
+	}
 	if req.SnapName == "" && req.Mode == "create" {
 		req.SnapName = "web" + time.Now().Format("20060102150405")
 	}
@@ -384,7 +414,11 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeFieldErr(w, err)
 		return
 	}
-	s.submit(w, r, "Снимок ("+req.Mode+") "+e.Name+"@"+req.SnapName, e.Name, args, nil)
+	title := map[string]string{"create": "Снимок", "rollback": "Откат к снимку", "destroy": "Удаление снимка"}[req.Mode] + " " + e.Name + "@" + req.SnapName
+	if req.Mode == "destroyall" {
+		title = "Удаление всех снимков " + e.Name
+	}
+	s.submit(w, r, title, e.Name, args, nil)
 }
 
 type cloneReq struct {

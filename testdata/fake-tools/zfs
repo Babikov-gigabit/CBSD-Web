@@ -1,0 +1,10 @@
+#!/bin/sh
+# Stand-in for zfs list used by cbsd-web (dev and tests).
+case "$*" in
+*"-t snapshot"*)
+	last=""; for a in "$@"; do last=$a; done
+	printf '%s@web20251001093000\t52428800\n%s@before-upgrade\t104857600\n' "$last" "$last" ;;
+*) last=""; for a in "$@"; do last=$a; done
+	case "$last" in /*) ds="zroot/jails/$(basename "$last" | sed 's/-data$//')"; mp=$last ;; *) ds=$last; mp="/usr/jails/jails-data/$(basename "$last")-data" ;; esac
+	printf '%s\t1288490188\t53687091200\t1181116006\t%s\n' "$ds" "$mp" ;;
+esac

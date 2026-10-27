@@ -230,7 +230,11 @@ type Env struct {
 	Profile   string `json:"vm_os_profile,omitempty"`
 	VNCPort   int64  `json:"vnc_port,omitempty"`
 	VNCBind   string `json:"vnc_bind,omitempty"`
-	Maint     string `json:"maintenance,omitempty"`
+	VNCRes    string `json:"vnc_resolution,omitempty"`
+	// The password itself is only served by the console endpoint.
+	VNCPassword string `json:"-"`
+	HasVNCPass  bool   `json:"vnc_has_password,omitempty"`
+	Maint       string `json:"maintenance,omitempty"`
 }
 
 func str(v any) string {
@@ -272,6 +276,15 @@ func clean(v any) string {
 
 var jailCols = []string{"jname", "jid", "path", "host_hostname", "ip4_addr", "astart", "ver", "arch",
 	"baserw", "vnet", "status", "protected", "hidden", "emulator", "interface", "maintenance", "slavenode"}
+
+func firstClean(vs ...any) string {
+	for _, v := range vs {
+		if s := clean(v); s != "" {
+			return s
+		}
+	}
+	return ""
+}
 
 // Envs lists environments. emulator filters ("" = all).
 func (d *DB) Envs(ctx context.Context, emulator string) ([]Env, error) {
@@ -316,7 +329,8 @@ func (d *DB) Envs(ctx context.Context, emulator string) ([]Env, error) {
 			continue
 		}
 		vrows, err := d.selectAvailable(ctx, "local", emu,
-			[]string{"jname", "vm_cpus", "vm_ram", "vm_os_type", "vm_os_profile", "vm_vnc_port", "bhyve_vnc_tcp_bind", "xen_vnc_tcp_bind"}, "")
+			[]string{"jname", "vm_cpus", "vm_ram", "vm_os_type", "vm_os_profile", "vm_vnc_port", "bhyve_vnc_tcp_bind", "bhyve_vnc_bind", "xen_vnc_tcp_bind",
+				"bhyve_vnc_resolution", "xen_vnc_resolution", "vnc_password"}, "")
 		if err != nil {
 			continue // table may not exist on hosts without that hypervisor
 		}
@@ -331,10 +345,10 @@ func (d *DB) Envs(ctx context.Context, emulator string) ([]Env, error) {
 			e.OSType = clean(r["vm_os_type"])
 			e.Profile = clean(r["vm_os_profile"])
 			e.VNCPort = num(r["vm_vnc_port"])
-			e.VNCBind = clean(r["bhyve_vnc_tcp_bind"])
-			if e.VNCBind == "" {
-				e.VNCBind = clean(r["xen_vnc_tcp_bind"])
-			}
+			e.VNCBind = firstClean(r["bhyve_vnc_tcp_bind"], r["bhyve_vnc_bind"], r["xen_vnc_tcp_bind"])
+			e.VNCRes = firstClean(r["bhyve_vnc_resolution"], r["xen_vnc_resolution"])
+			e.VNCPassword = clean(r["vnc_password"])
+			e.HasVNCPass = e.VNCPassword != ""
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

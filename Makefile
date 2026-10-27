@@ -25,7 +25,7 @@ dev: build
 	printf '{"listen":"127.0.0.1:8099","tls_auto":false,"data_dir":"/tmp/cbsd-dev/data","users_file":"/tmp/cbsd-dev/users.json","audit_log":"/tmp/cbsd-dev/audit.log","workdir":"/tmp/cbsd-dev/jails","dist_dir":"/tmp/cbsd-dev/dist","cbsd_command":["/bin/sh","$(CURDIR)/testdata/fake-cbsd"],"initenv_command":["/bin/sh","$(CURDIR)/testdata/fake-cbsd","initenv"]}' > /tmp/cbsd-dev/conf.json
 	echo "dev-password-1" | ./cbsd-web -config /tmp/cbsd-dev/conf.json useradd admin -role admin
 	@echo "login: admin / dev-password-1"
-	./cbsd-web -config /tmp/cbsd-dev/conf.json -allow-root serve
+	CBSDWEB_DEV_TOOLS=$(CURDIR)/testdata/fake-tools ./cbsd-web -config /tmp/cbsd-dev/conf.json -allow-root serve
 
 clean:
 	rm -rf cbsd-web bin

@@ -11,7 +11,9 @@ jlogin)
 jrctl)
 	case "$*" in *mode=show*) printf 'memoryuse=412M\nmaxproc=37\nopenfiles=310\npcpu=3\n'; exit 0 ;; esac ;;
 jsnapshot|bsnapshot)
-	case "$*" in *mode=list*) printf 'SNAPNAME  CREATED\nweb20251001 2025-10-01 10:00\n'; exit 0 ;; esac ;;
+	case "$*" in *mode=list*)
+		j=$(printf '%s\n' "$@" | sed -n 's/^jname=//p')
+		printf 'zroot/jails/%s@web20251001093000 2025-10-01__09:30 1.21G\nzroot/jails/%s@before-upgrade 2025-10-20__18:05 1.34G\n' "$j" "$j"; exit 0 ;; esac ;;
 esac
 printf '\033[0;32mfake cbsd\033[0m: %s\n' "$*"
 for i in 1 2 3; do

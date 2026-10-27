@@ -196,3 +196,14 @@ input.bad { border-color: var(--err); }
 /* terminal */
 .term-box { background: #0d1117; border-radius: var(--radius); padding: 8px; height: calc(100vh - 150px); min-height: 300px; overflow: hidden; }
 .term-box .xterm { height: 100%; }
+
+/* overview cards */
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.btn.disabled { opacity: .5; pointer-events: none; }
+table.compact th, table.compact td { padding: 6px 10px; }
+tr.snap-loc td { background: var(--panel-2); white-space: normal; }
+code.mono { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; word-break: break-all; }
+
+/* VNC */
+.vnc-box { background: #0d1117; border-radius: var(--radius); height: calc(100vh - 190px); min-height: 320px; overflow: hidden; }
+.vnc-box:fullscreen { border-radius: 0; height: 100vh; }

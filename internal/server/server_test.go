@@ -19,6 +19,9 @@ import (
 	"github.com/cbsd-web/cbsd-web/internal/devfixture"
 )
 
+// testWorkdir is the fixture workdir of the latest setup().
+var testWorkdir string
+
 type client struct {
 	t    *testing.T
 	base string
@@ -66,6 +69,7 @@ func setup(t *testing.T) (*httptest.Server, func(string) *client) {
 	auth.BcryptCost = 4 // bcrypt.MinCost: keeps tests fast
 	dir := t.TempDir()
 	wd := filepath.Join(dir, "jails")
+	testWorkdir = wd
 	if err := devfixture.Build(wd); err != nil {
 		t.Fatal(err)
 	}
