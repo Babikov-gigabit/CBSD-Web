@@ -214,3 +214,30 @@ func TestRctlArgs(t *testing.T) {
 		}
 	}
 }
+
+func TestISONames(t *testing.T) {
+	for _, s := range hostile {
+		if ValidISOFile(s+".iso") || ValidMediaName(s) || ValidMediaRel(s) {
+			t.Errorf("%q accepted", s)
+		}
+	}
+	for _, s := range []string{"FreeBSD-14.3-RELEASE-amd64-disc1.iso", "Win11_24H2_x64.ISO", "a.iso"} {
+		if !ValidISOFile(s) {
+			t.Errorf("%q rejected", s)
+		}
+	}
+	for _, s := range []string{".hidden.iso", "a.img", "a.iso.part", "dir/a.iso", strings.Repeat("a", 60) + ".iso", ".iso"} {
+		if ValidISOFile(s) {
+			t.Errorf("%q accepted", s)
+		}
+	}
+	if got := ISOMediaName("Debian-12.iso"); got != "web-Debian-12" || !ValidMediaName(got) {
+		t.Errorf("media name %q", got)
+	}
+	if !ValidISOFile(strings.Repeat("a", 59)+".iso") || !ValidMediaName(ISOMediaName(strings.Repeat("a", 59)+".iso")) {
+		t.Error("longest ISO name must give a valid media name")
+	}
+	if !ValidMediaRel("upload/a.iso") || ValidMediaRel("../a.iso") || ValidMediaRel("/a.iso") || ValidMediaRel("a/../b") {
+		t.Error("relative media path check")
+	}
+}

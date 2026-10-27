@@ -51,6 +51,11 @@ type Config struct {
 	TerminalRole string `json:"terminal_role"`
 	// Close terminals without input or output for this long.
 	TerminalIdleMinutes int `json:"terminal_idle_minutes"`
+	// Largest ISO image accepted by upload or download, in GiB.
+	ISOMaxSizeGB int `json:"iso_max_size_gb"`
+	// Allow downloading ISOs from loopback/private/link-local addresses. Off by
+	// default so the download form cannot be used to probe the internal network.
+	ISOFetchAllowPrivate bool `json:"iso_fetch_allow_private"`
 
 	allowed []*net.IPNet
 }
@@ -72,6 +77,7 @@ func Default() *Config {
 		CommandTimeoutMinutes: 120,
 		TerminalRole:          "admin",
 		TerminalIdleMinutes:   30,
+		ISOMaxSizeGB:          32,
 		AllowedNetworks:       []string{"127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"},
 	}
 }
@@ -130,6 +136,12 @@ func (c *Config) finish() error {
 	}
 	if c.TerminalIdleMinutes <= 0 {
 		c.TerminalIdleMinutes = 30
+	}
+	if c.ISOMaxSizeGB <= 0 {
+		c.ISOMaxSizeGB = 32
+	}
+	if c.ISOMaxSizeGB > 1024 {
+		return fmt.Errorf("iso_max_size_gb must be at most 1024: %d", c.ISOMaxSizeGB)
 	}
 	c.allowed = nil
 	for _, s := range c.AllowedNetworks {

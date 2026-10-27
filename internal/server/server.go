@@ -37,6 +37,7 @@ type Server struct {
 	static   *staticFS
 	terms    terminals
 	hist     *snaphist.Store
+	isos     isoGate
 	version  string
 }
 
@@ -109,6 +110,10 @@ func (s *Server) Handler() http.Handler {
 	s.route(mux, "POST /api/vms/{emulator}", o, s.handleVMCreate)
 	s.route(mux, "GET /api/profiles", v, s.handleProfiles)
 	s.route(mux, "GET /api/images", v, s.handleImages)
+	s.route(mux, "GET /api/isos", v, s.handleISOs)
+	s.route(mux, "POST "+isoUploadPath, a, s.handleISOUpload)
+	s.route(mux, "POST /api/isos/fetch", a, s.handleISOFetch)
+	s.route(mux, "DELETE /api/isos/{file}", a, s.handleISODelete)
 	s.route(mux, "GET /api/bases", v, s.handleBases)
 	s.route(mux, "POST /api/bases", a, s.handleBaseFetch)
 	s.route(mux, "GET /api/nodes", v, s.handleNodes)
@@ -257,7 +262,10 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			h.Set("Cache-Control", "no-store")
-			r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+			// ISO uploads stream large bodies; that handler sets its own limit.
+			if r.URL.Path != isoUploadPath {
+				r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+			}
 		}
 		next.ServeHTTP(w, r)
 	})

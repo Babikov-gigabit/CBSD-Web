@@ -237,6 +237,12 @@ type Env struct {
 	Maint       string `json:"maintenance,omitempty"`
 }
 
+// Str returns column k as text.
+func (r Row) Str(k string) string { return str(r[k]) }
+
+// Num returns column k as a number.
+func (r Row) Num(k string) int64 { return num(r[k]) }
+
 func str(v any) string {
 	switch t := v.(type) {
 	case nil:
@@ -374,9 +380,14 @@ func (d *DB) Images(ctx context.Context) ([]Row, error) {
 	return d.selectAvailable(ctx, "local", "images", []string{"name", "path", "emulator", "size", "created", "sources", "md5"}, "")
 }
 
-// Media lists registered ISO/disk media (local::media).
+// Media lists registered ISO/disk media. Current CBSD keeps them in
+// storage_media::media; older releases used local::media.
 func (d *DB) Media(ctx context.Context) ([]Row, error) {
-	return d.selectAvailable(ctx, "local", "media", []string{"name", "path", "type", "jname", "size"}, "")
+	db := "local"
+	if d.Exists("storage_media") {
+		db = "storage_media"
+	}
+	return d.selectAvailable(ctx, db, "media", []string{"name", "path", "type", "jname", "size"}, "")
 }
 
 // Bases lists installed FreeBSD bases (local::bsdbase).

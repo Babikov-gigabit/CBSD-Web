@@ -532,6 +532,9 @@ func (s *Server) handleJailCreate(w http.ResponseWriter, r *http.Request) {
 type vmCreateReq struct {
 	cbsd.VMCreate
 	PubKey string `json:"ci_user_pubkey"`
+	// Installation ISO: a CBSD media name from GET /api/isos, instead of the
+	// one the profile would download.
+	ISO string `json:"iso"`
 }
 
 func (s *Server) handleVMCreate(w http.ResponseWriter, r *http.Request) {
@@ -555,6 +558,21 @@ func (s *Server) handleVMCreate(w http.ResponseWriter, r *http.Request) {
 	if ex, _ := s.db.Env(r.Context(), req.Name); ex != nil {
 		writeFieldErr(w, &cbsd.FieldError{Field: "jname", Msg: "имя уже занято"})
 		return
+	}
+	isoRel := ""
+	if req.ISO != "" {
+		for _, p := range s.profiles.For(emu) {
+			if p.OSType == req.OSType && p.Name == req.Profile && p.Cloud {
+				writeFieldErr(w, &cbsd.FieldError{Field: "iso", Msg: "облачный профиль ставится без ISO"})
+				return
+			}
+		}
+		rel, err := s.isoForVM(r.Context(), req.ISO)
+		if err != nil {
+			writeFieldErr(w, &cbsd.FieldError{Field: "iso", Msg: err.Error()})
+			return
+		}
+		isoRel = rel
 	}
 	// The key is passed to CBSD as a file path, never inline, so it cannot
 	// break CBSD's argument parsing.
@@ -581,6 +599,11 @@ func (s *Server) handleVMCreate(w http.ResponseWriter, r *http.Request) {
 		cleanup()
 		writeFieldErr(w, err)
 		return
+	}
+	if isoRel != "" {
+		// bcreate registers the ISO for the new VM (path is relative to
+		// <workdir>/src/iso) and bstart boots from it via vm_iso_path.
+		args = append(args, "register_iso_as="+req.ISO, "register_iso_name="+isoRel, "vm_iso_path="+req.ISO)
 	}
 	s.submit(w, r, "Создание ВМ "+req.Name, req.Name, args, cleanup)
 }

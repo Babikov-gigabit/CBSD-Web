@@ -24,7 +24,6 @@ var schema = []string{
 	`CREATE TABLE local (nodename TEXT, nodeip TEXT, nodeippool TEXT, natip TEXT, nat_enable TEXT, zfsfeat INTEGER, jnameserver TEXT)`,
 	`CREATE TABLE bsdbase (idx INTEGER PRIMARY KEY, platform TEXT, name TEXT, arch TEXT, targetarch TEXT, ver TEXT, stable INTEGER, elf TEXT, date TEXT, source TEXT, status INTEGER)`,
 	`CREATE TABLE images (id INTEGER PRIMARY KEY, name TEXT, path TEXT, emulator TEXT, size INTEGER, created TEXT)`,
-	`CREATE TABLE media (name TEXT, path TEXT, type TEXT, jname TEXT, size INTEGER)`,
 }
 
 var data = []string{
@@ -41,7 +40,6 @@ var data = []string{
 	`INSERT INTO local VALUES ('node1.example.org','192.168.1.10','10.0.0.0/24','192.168.1.10','pf',1,'8.8.8.8,8.8.4.4')`,
 	`INSERT INTO bsdbase (platform,name,arch,targetarch,ver,stable,elf,date,source,status) VALUES ('FreeBSD','base','amd64','amd64','14.3',0,'1403000','2025-06-10','repo',1)`,
 	`INSERT INTO images (name,path,emulator,size,created) VALUES ('nginx-template','/usr/jails/import/nginx.img','jail',157286400,'2025-09-01 10:00:00')`,
-	`INSERT INTO media VALUES ('iso-FreeBSD-14.3','/usr/jails/src/iso/FreeBSD-14.3.iso','iso','vm_freebsd',1288490188)`,
 }
 
 var profiles = map[string]string{
@@ -130,10 +128,40 @@ func Build(dir string) error {
 	}); err != nil {
 		return err
 	}
+	// Media live in their own database in current CBSD.
+	os.Remove(filepath.Join(dbdir, "storage_media.sqlite"))
+	md, err := sql.Open("sqlite", filepath.Join(dbdir, "storage_media.sqlite"))
+	if err != nil {
+		return err
+	}
+	defer md.Close()
+	iso := filepath.Join(dir, "src", "iso")
+	if err := run(md, []string{
+		`CREATE TABLE media (idx INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, path TEXT, type TEXT, jname TEXT, size INTEGER)`,
+		fmt.Sprintf(`INSERT INTO media (name,path,type,jname,size) VALUES
+			('iso-FreeBSD-14.3','%[1]s/FreeBSD-14.3.iso','iso','vm_freebsd',1288490188),
+			('web-alpine-3.20','%[1]s/upload/alpine-3.20.iso','iso','-',%[2]d),
+			('hdd-vm_freebsd','/usr/jails/vm/vm_freebsd/dsk1.vhd','hdd','vm_freebsd',21474836480)`, iso, len(FakeISO())),
+	}); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(iso, "upload"), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(iso, "upload", "alpine-3.20.iso"), FakeISO(), 0o644); err != nil {
+		return err
+	}
 	for name, body := range profiles {
 		if err := os.WriteFile(filepath.Join(pdir, name), []byte(body), 0o644); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// FakeISO returns a minimal file that passes the ISO 9660 signature check.
+func FakeISO() []byte {
+	b := make([]byte, 0x8800)
+	copy(b[0x8001:], "CD001")
+	return b
 }
