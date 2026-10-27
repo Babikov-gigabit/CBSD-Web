@@ -59,7 +59,9 @@ func TestSnapshotGraphAndRollbackBranch(t *testing.T) {
 	}
 	ev := hist[0].(map[string]any)
 	lost := ev["lost"].([]any)
-	if ev["to"] != "web20251001093000" || ev["branch"] != "web1_saved" || ev["user"] != "admin" || len(lost) != 1 || lost[0].(map[string]any)["name"] != "before-upgrade" {
+	// The fake jclone does not register web1_saved, so like a removed jail
+	// the saved branch is not shown; the lost snapshots still are.
+	if ev["to"] != "web20251001093000" || ev["branch"] != nil || ev["user"] != "admin" || len(lost) != 1 || lost[0].(map[string]any)["name"] != "before-upgrade" {
 		t.Errorf("event: %v", ev)
 	}
 }
@@ -128,7 +130,7 @@ func TestOpenSnapshotAsJail(t *testing.T) {
 	if len(hist) != 1 {
 		t.Fatalf("history: %v", hist)
 	}
-	if ev := hist[0].(map[string]any); ev["type"] != "try" || ev["branch"] != "web1_try" || ev["kept"] != "before_try" {
+	if ev := hist[0].(map[string]any); ev["type"] != "try" || ev["branch"] != nil || ev["kept"] != "before_try" {
 		t.Errorf("event: %v", ev)
 	}
 }

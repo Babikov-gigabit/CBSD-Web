@@ -53,7 +53,20 @@ func (s *Server) handleSnapshotGraph(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	ds, cbsdSnaps := s.envDataset(ctx, e.Name)
-	res := map[string]any{"env": e.Name, "dataset": ds, "history": s.hist.Events(e.Name), "now": time.Now().Unix()}
+	known := map[string]bool{}
+	if envs, err := s.db.Envs(ctx, ""); err == nil {
+		for _, x := range envs {
+			known[x.Name] = true
+		}
+	}
+	// A saved branch disappears from the graph once its jail is removed.
+	hist := s.hist.Events(e.Name)
+	for i := range hist {
+		if hist[i].Branch != "" && !known[hist[i].Branch] {
+			hist[i].Branch = ""
+		}
+	}
+	res := map[string]any{"env": e.Name, "dataset": ds, "history": hist, "now": time.Now().Unix()}
 	if ds == "" {
 		res["error"] = "не удалось определить набор ZFS окружения (нужен ZFS)"
 		writeJSON(w, http.StatusOK, res)
@@ -79,12 +92,6 @@ func (s *Server) handleSnapshotGraph(w http.ResponseWriter, r *http.Request) {
 	props, _ := hoststat.DatasetProps(ctx, ds)
 	res["current"] = props
 
-	known := map[string]bool{}
-	if envs, err := s.db.Envs(ctx, ""); err == nil {
-		for _, x := range envs {
-			known[x.Name] = true
-		}
-	}
 	if props.Origin != "" {
 		pds, psnap, _ := strings.Cut(props.Origin, "@")
 		res["parent"] = graphRef{Dataset: pds, Snap: psnap, Env: envOfDataset(pds, "", known)}
