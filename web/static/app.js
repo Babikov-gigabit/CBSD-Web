@@ -489,7 +489,7 @@ async function pageEnv(name, tab) {
     const { env: e, busy_job: busyJob } = await api('GET', '/api/envs/' + enc);
     const back = { jail: '#/jails', bhyve: '#/vms', xen: '#/xen' }[e.emulator] || '#/';
     const isJail = e.emulator === 'jail';
-    if (!isJail && tab !== 'logs') tab = '';
+    if (!isJail && tab === 'limits') tab = '';
     const tools = [];
     if (can('operator')) {
       if (!isJail) tools.push(h('button', { type: 'button', onclick: () => editEnv(e) }, 'Настройки'));
@@ -509,10 +509,11 @@ async function pageEnv(name, tab) {
     if (isJail) {
       head.push(h('nav', { class: 'tabs' }, t('', 'Обзор'), t('config', 'Конфигурация'), t('limits', 'Лимиты ресурсов'), logsTab,
         state.terminal ? h('a', { href: '#/env/' + enc + '/terminal' }, '>_ Терминал') : null));
-    } else if (logsTab) {
-      head.push(h('nav', { class: 'tabs' }, t('', 'Обзор'), logsTab));
+    } else {
+      const consoleTab = state.terminal && e.vnc_port ? h('a', { href: '#/env/' + enc + '/vnc', class: e.status === 1 ? '' : 'muted', title: e.status === 1 ? '' : 'Машина не запущена' }, '🖥 Консоль') : null;
+      head.push(h('nav', { class: 'tabs' }, t('', 'Обзор'), t('config', 'Конфигурация'), consoleTab, logsTab));
     }
-    if (tab === 'config') return fill(main, head, await jailConfigTab(e));
+    if (tab === 'config') return fill(main, head, await configTab(e));
     if (tab === 'limits') return fill(main, head, await jailLimitsTab(e));
     if (tab === 'logs') return fill(main, head, await envLogsTab(e));
     fill(main, head, envOverview(e, keep));
@@ -551,7 +552,7 @@ async function envLogsTab(e) {
     cards.length ? cards : h('div', { class: 'card mt empty' }, 'Журналов пока нет: окружение ещё не запускалось.'));
 }
 
-async function jailConfigTab(e) {
+async function configTab(e) {
   const url = '/api/envs/' + encodeURIComponent(e.jname) + '/config';
   const r = await api('GET', url);
   const orig = r.values || {};
@@ -566,7 +567,8 @@ async function jailConfigTab(e) {
     return out;
   };
   const restartBox = h('input', { type: 'checkbox', id: 'cfg_restart' });
-  const restartWrap = h('label', { class: 'row small', for: 'cfg_restart', hidden: true }, restartBox, 'Перезапустить клетку, чтобы применить');
+  const what = r.vm ? 'ВМ' : 'клетку';
+  const restartWrap = h('label', { class: 'row small', for: 'cfg_restart', hidden: true }, restartBox, 'Перезапустить ' + what + ', чтобы применить');
   const update = () => {
     const d = diff();
     for (const c of Object.values(ctrls)) c.wrap.classList.toggle('changed', c.p.name in d);
@@ -601,8 +603,11 @@ async function jailConfigTab(e) {
       const opts = p.options.includes(v) ? p.options : [v, ...p.options];
       input = h('select', { id, disabled }, opts.map((o) => h('option', { value: o }, o)));
       input.value = v;
+    } else if (p.secret) {
+      input = h('input', { id, type: 'password', value: '', disabled, autocomplete: 'new-password',
+        placeholder: (r.secret_set || {})[p.name] ? 'задан; введите новый, чтобы сменить' : 'не задан' });
     } else input = h('input', { id, type: p.kind === 'int' ? 'number' : 'text', min: p.kind === 'int' ? p.min : null, max: p.kind === 'int' ? p.max : null, value: v, disabled, autocomplete: 'off', spellcheck: 'false' });
-    const marks = [p.live ? null : h('span', { class: 'mark', title: 'На запущенной клетке применяется перезапуском' }, '↻'),
+    const marks = [p.live ? null : h('span', { class: 'mark', title: r.vm ? 'Применяется при следующем запуске ВМ' : 'На запущенной клетке применяется перезапуском' }, '↻'),
       p.admin ? h('span', { class: 'mark', title: 'Меняет только администратор' }, '🔒') : null];
     const label = h('label', { for: id }, p.label, ' ', marks);
     const meta = h('div', { class: 'help' }, h('span', { class: 'mono' }, p.name), p.help ? ' · ' + p.help : '');
@@ -626,8 +631,8 @@ async function jailConfigTab(e) {
   } });
   const box = h('div', { oninput: update, onchange: update },
     h('div', { class: 'row', style: 'margin-bottom:12px' }, search,
-      h('span', { class: 'muted small' }, '↻ — на запущенной клетке нужен перезапуск, 🔒 — только администратор. Значения пишутся через cbsd jset.')),
-    r.busy_job ? h('div', { class: 'banner warn' }, 'Сейчас над клеткой выполняется задача; изменения можно будет сохранить после неё.') : null,
+      h('span', { class: 'muted small' }, (r.vm ? '↻ — применяется при следующем запуске ВМ' : '↻ — на запущенной клетке нужен перезапуск') + ', 🔒 — только администратор. Значения пишутся через cbsd ' + (r.command || 'jset') + '.')),
+    r.busy_job ? h('div', { class: 'banner warn' }, 'Сейчас над ' + (r.vm ? 'ВМ' : 'клеткой') + ' выполняется задача; изменения можно будет сохранить после неё.') : null,
     h('div', { class: 'pgroups' }, cards), bar.bar);
   return box;
 }

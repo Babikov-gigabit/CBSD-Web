@@ -255,7 +255,8 @@ func (s *Server) submitSteps(w http.ResponseWriter, r *http.Request, title, targ
 			defer func() { onDone(err) }()
 		}
 		step := func(ctx context.Context, args []string) error {
-			fmt.Fprintf(out, "$ cbsd %s\n", strings.Join(args, " "))
+			// Job logs are visible to every role, so passwords are masked.
+			fmt.Fprintf(out, "$ cbsd %s\n", redactLog(strings.Join(args, " ")))
 			st := &ansiStripper{w: out}
 			err := s.runner.Stream(ctx, st, args...)
 			st.Flush()
@@ -1043,8 +1044,16 @@ func (s *Server) loadJail(w http.ResponseWriter, r *http.Request) *cbsd.Env {
 }
 
 func (s *Server) handleJailConfig(w http.ResponseWriter, r *http.Request) {
-	e := s.loadJail(w, r)
+	e := s.loadEnv(w, r)
 	if e == nil {
+		return
+	}
+	if e.Emulator == "bhyve" || e.Emulator == "xen" {
+		s.handleVMConfig(w, r, e)
+		return
+	}
+	if e.Emulator != "jail" {
+		writeErr(w, http.StatusBadRequest, "настройки недоступны для "+e.Emulator)
 		return
 	}
 	vals, err := s.db.JailConfig(r.Context(), e.Name)
@@ -1059,8 +1068,16 @@ func (s *Server) handleJailConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleJailConfigSet(w http.ResponseWriter, r *http.Request) {
-	e := s.loadJail(w, r)
+	e := s.loadEnv(w, r)
 	if e == nil {
+		return
+	}
+	if e.Emulator == "bhyve" || e.Emulator == "xen" {
+		s.handleVMConfigSet(w, r, e)
+		return
+	}
+	if e.Emulator != "jail" {
+		writeErr(w, http.StatusBadRequest, "настройки недоступны для "+e.Emulator)
 		return
 	}
 	var u cbsd.JailConfigUpdate
@@ -1127,4 +1144,43 @@ func (s *Server) handleJailLimitsSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.submit(w, r, "Лимиты "+e.Name, e.Name, args, nil)
+}
+
+func (s *Server) handleVMConfig(w http.ResponseWriter, r *http.Request, e *cbsd.Env) {
+	vals, secret, err := s.db.VMConfig(r.Context(), e.Emulator, e.Name)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, dbErrorMessage(err))
+		return
+	}
+	cmd := "bset"
+	if e.Emulator == "xen" {
+		cmd = "xset"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"groups": cbsd.VMParamGroups, "params": cbsd.VMParamsFor(e.Emulator), "values": vals, "secret_set": secret,
+		"running": e.Status == 1, "busy_job": s.jobs.Busy()[e.Name], "command": cmd, "vm": true,
+	})
+}
+
+func (s *Server) handleVMConfigSet(w http.ResponseWriter, r *http.Request, e *cbsd.Env) {
+	var u cbsd.VMConfigUpdate
+	if err := readJSON(r, &u); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	args, err := u.Args(e.Emulator, e.Name, sessionFrom(r).sess.Role.Allows(auth.RoleAdmin))
+	if err != nil {
+		writeFieldErr(w, err)
+		return
+	}
+	steps := [][]string{args}
+	if u.Restart && e.Status == 1 {
+		// bset only stores the values; a running VM reads them on start.
+		stop, start := "bstop", "bstart"
+		if e.Emulator == "xen" {
+			stop, start = "xstop", "xstart"
+		}
+		steps = append(steps, []string{stop, "jname=" + e.Name}, []string{start, "jname=" + e.Name})
+	}
+	s.submitSteps(w, r, "Настройки "+e.Name, e.Name, steps, nil, nil)
 }

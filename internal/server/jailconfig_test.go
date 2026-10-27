@@ -25,9 +25,6 @@ func TestJailConfigAndLimits(t *testing.T) {
 	if m["running"] != true || len(m["params"].([]any)) < 60 {
 		t.Errorf("spec: running=%v params=%d", m["running"], len(m["params"].([]any)))
 	}
-	if resp, _ := view.do("GET", "/api/envs/vm_freebsd/config", nil, nil); resp.StatusCode != 400 {
-		t.Errorf("vm config: %d", resp.StatusCode)
-	}
 
 	if resp, _ := view.do("PATCH", "/api/envs/build/config", map[string]any{"values": map[string]string{"allow_raw_sockets": "1"}}, nil); resp.StatusCode != 403 {
 		t.Errorf("viewer patch: %d", resp.StatusCode)
@@ -143,5 +140,48 @@ func TestTerminal(t *testing.T) {
 		if _, _, err := conn.Read(ctx); err != nil {
 			break
 		}
+	}
+}
+
+func TestVMConfig(t *testing.T) {
+	_, newClient := setup(t)
+	view, oper, admin := newClient("view"), newClient("oper"), newClient("admin")
+
+	resp, m := view.do("GET", "/api/envs/vm_freebsd/config", nil, nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("config: %d %v", resp.StatusCode, m)
+	}
+	vals := m["values"].(map[string]any)
+	if vals["vm_ram"] != "2g" || vals["vm_cpus"] != "2" || vals["vm_efi"] != "uefi" || vals["cd_vnc_wait"] != "1" || m["command"] != "bset" {
+		t.Errorf("values: %v", vals)
+	}
+	if vals["vnc_password"] != "" || m["secret_set"].(map[string]any)["vnc_password"] != true {
+		t.Errorf("VNC password leaked or not flagged: %v %v", vals["vnc_password"], m["secret_set"])
+	}
+	if resp, _ := view.do("PATCH", "/api/envs/vm_freebsd/config", map[string]any{"values": map[string]string{"vm_cpus": "4"}}, nil); resp.StatusCode != 403 {
+		t.Errorf("viewer patch: %d", resp.StatusCode)
+	}
+	if resp, m := oper.do("PATCH", "/api/envs/vm_freebsd/config", map[string]any{"values": map[string]string{"vnc_password": "newpass123"}}, nil); resp.StatusCode != 422 || m["field"] != "vnc_password" {
+		t.Errorf("operator password: %d %v", resp.StatusCode, m)
+	}
+	for k, v := range map[string]string{"vm_ram": "4g;reboot", "bhyve_vnc_resolution": "big", "vm_efi": "bios", "nosuch": "1", "vm_cpus": "0"} {
+		if resp, m := oper.do("PATCH", "/api/envs/vm_freebsd/config", map[string]any{"values": map[string]string{k: v}}, nil); resp.StatusCode != 422 || m["field"] != k {
+			t.Errorf("bad %s=%s: %d %v", k, v, resp.StatusCode, m)
+		}
+	}
+	resp, m = oper.do("PATCH", "/api/envs/vm_freebsd/config", map[string]any{"values": map[string]string{"vm_cpus": "4", "vm_ram": "4G", "cd_vnc_wait": "0"}, "restart": true}, nil)
+	if resp.StatusCode != 202 {
+		t.Fatalf("patch: %d %v", resp.StatusCode, m)
+	}
+	out := jobOutput(t, oper, m)
+	if !strings.Contains(out, "bset jname=vm_freebsd vm_cpus=4 vm_ram=4g cd_vnc_wait=0") || !strings.Contains(out, "bstop jname=vm_freebsd") || !strings.Contains(out, "bstart jname=vm_freebsd") {
+		t.Errorf("output: %s", out)
+	}
+	resp, m = admin.do("PATCH", "/api/envs/xen1/config", map[string]any{"values": map[string]string{"vnc_password": "newpass123", "xen_vnc_resolution": "1280x1024"}}, nil)
+	if resp.StatusCode != 202 {
+		t.Fatalf("xen patch: %d %v", resp.StatusCode, m)
+	}
+	if out := jobOutput(t, admin, m); !strings.Contains(out, "$ cbsd xset jname=xen1 xen_vnc_resolution=1280x1024 vnc_password=***\n") {
+		t.Errorf("xen output: %s", out)
 	}
 }

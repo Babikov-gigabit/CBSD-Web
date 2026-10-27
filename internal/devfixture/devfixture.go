@@ -34,9 +34,9 @@ var data = []string{
 		('vm_freebsd',0,'/usr/jails/jails/vm_freebsd','0','10.0.0.20',1,'0',0,1,0,'bhyve','auto'),
 		('vm_debian',0,'/usr/jails/jails/vm_debian','0','DHCP',0,'0',0,0,0,'bhyve','auto'),
 		('xen1',0,'/usr/jails/jails/xen1','0','10.0.0.30',0,'0',0,0,0,'xen','auto')`,
-	`INSERT INTO bhyve VALUES ('vm_freebsd',2,2147483648,'freebsd','FreeBSD-14.3-x86_64',5900,'127.0.0.1'),
+	`INSERT INTO bhyve (jname,vm_cpus,vm_ram,vm_os_type,vm_os_profile,vm_vnc_port,bhyve_vnc_tcp_bind) VALUES ('vm_freebsd',2,2147483648,'freebsd','FreeBSD-14.3-x86_64',5900,'127.0.0.1'),
 		('vm_debian',1,1073741824,'linux','cloud-Debian-12-x86_64',0,'127.0.0.1')`,
-	`INSERT INTO xen VALUES ('xen1',1,536870912,'freebsd','FreeBSD-14.3-x86_64',0)`,
+	`INSERT INTO xen (jname,vm_cpus,vm_ram,vm_os_type,vm_os_profile,vm_vnc_port) VALUES ('xen1',1,536870912,'freebsd','FreeBSD-14.3-x86_64',0)`,
 	`INSERT INTO local VALUES ('node1.example.org','192.168.1.10','10.0.0.0/24','192.168.1.10','pf',1,'8.8.8.8,8.8.4.4')`,
 	`INSERT INTO bsdbase (platform,name,arch,targetarch,ver,stable,elf,date,source,status) VALUES ('FreeBSD','base','amd64','amd64','14.3',0,'1403000','2025-06-10','repo',1)`,
 	`INSERT INTO images (name,path,emulator,size,created) VALUES ('nginx-template','/usr/jails/import/nginx.img','jail',157286400,'2025-09-01 10:00:00')`,
@@ -95,6 +95,40 @@ func Build(dir string) error {
 		}
 		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE jails ADD COLUMN %q TEXT DEFAULT '%s'", p.Name, def)); err != nil {
 			return err
+		}
+	}
+	// VM tables get every column the VM settings page edits, as real CBSD has.
+	vmDefaults := map[string]string{"vm_boot": "hdd", "vm_efi": "uefi", "cd_boot_firmware": "bhyve", "hdd_boot_firmware": "bhyve",
+		"cd_vnc_wait": "1", "bhyve_vnc_resolution": "1024x768", "xen_vnc_resolution": "1024x768", "bhyve_vnc_vgaconf": "io",
+		"fbuf": "1", "xhci": "1", "tablet": "1", "soundhw": "none", "vm_hostbridge": "hostbridge", "on_poweroff": "destroy",
+		"on_reboot": "restart", "on_crash": "destroy", "double_acpi": "1", "bhyve_generate_acpi": "1", "bhyve_mptable_gen": "1",
+		"xen_hap": "1", "vnc_password": "cbsd123456", "ip4_addr": "DHCP"}
+	for table, params := range map[string][]cbsd.Param{"bhyve": cbsd.BhyveParams, "xen": cbsd.XenParams} {
+		var cols []string
+		rows, err := db.Query(fmt.Sprintf("SELECT name FROM pragma_table_info('%s')", table))
+		if err != nil {
+			return err
+		}
+		have := map[string]bool{}
+		for rows.Next() {
+			var c string
+			rows.Scan(&c)
+			have[c] = true
+		}
+		rows.Close()
+		for _, p := range params {
+			if !have[p.Name] {
+				cols = append(cols, p.Name)
+			}
+		}
+		for _, c := range cols {
+			def := vmDefaults[c]
+			if def == "" {
+				def = "0"
+			}
+			if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %q TEXT DEFAULT '%s'", table, c, def)); err != nil {
+				return err
+			}
 		}
 	}
 	if err := run(db, data); err != nil {
