@@ -72,6 +72,33 @@ func (s *Store) Add(env string, e Event) error {
 		l = l[len(l)-maxPerEnv:]
 	}
 	s.data[env] = l
+	return s.save()
+}
+
+// Remove forgets the events of env recorded at the given time, or all of
+// them when at is zero. It reports how many were removed.
+func (s *Store) Remove(env string, at time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var keep []Event
+	for _, e := range s.data[env] {
+		if !at.IsZero() && !e.At.Equal(at) {
+			keep = append(keep, e)
+		}
+	}
+	n := len(s.data[env]) - len(keep)
+	if n == 0 {
+		return 0, nil
+	}
+	if len(keep) == 0 {
+		delete(s.data, env)
+	} else {
+		s.data[env] = keep
+	}
+	return n, s.save()
+}
+
+func (s *Store) save() error {
 	b, err := json.MarshalIndent(s.data, "", " ")
 	if err != nil {
 		return err

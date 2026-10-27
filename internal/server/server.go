@@ -103,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 	s.route(mux, "GET /api/envs/{name}/snapshots", v, s.handleSnapshotList)
 	s.route(mux, "POST /api/envs/{name}/snapshots", o, s.handleSnapshot)
 	s.route(mux, "GET /api/envs/{name}/snapshots/graph", v, s.handleSnapshotGraph)
+	s.route(mux, "DELETE /api/envs/{name}/snapshots/history", o, s.handleSnapshotHistoryDelete)
 	s.route(mux, "POST /api/envs/{name}/clone", o, s.handleClone)
 	s.route(mux, "POST /api/jails", o, s.handleJailCreate)
 	s.route(mux, "POST /api/vms/{emulator}", o, s.handleVMCreate)

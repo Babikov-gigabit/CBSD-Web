@@ -1015,9 +1015,25 @@ function snapshotCard(e) {
           h('dt', null, 'Освободится при удалении'), h('dd', null, fmtBytes(s.used)),
           h('dt', null, 'Снимок ZFS'), h('dd', null, h('code', { class: 'mono' }, loc.dataset + '@' + s.name), ' ', copyBtn(loc.dataset + '@' + s.name))));
     };
-    const svg = snapshotGraphSVG(g, select);
+    // Recorded rollbacks are only the web UI's notes: forgetting them changes nothing in ZFS.
+    const forget = (ev) => {
+      const one = !!ev;
+      modal(one ? 'Убрать со схемы' : 'Очистить историю откатов', h('p', null, one
+        ? ['Линия отката к ', h('b', null, ev.to), ' и удалённые при нём снимки исчезнут со схемы. Сами снимки уже удалены, на данные это не влияет.']
+        : 'Все линии прошлых откатов и удалённых снимков исчезнут со схемы ' + e.jname + '. На данные и существующие снимки это не влияет.'), [
+        { text: 'Отмена' },
+        { text: 'Убрать', class: 'danger', onClick: async () => {
+          try { await api('DELETE', url + '/history' + (one ? '?at=' + encodeURIComponent(ev.at) : '')); load(); } catch (err) { fail(err); }
+        } },
+      ]);
+    };
+    const shown = (g.history || []).filter(graphHistoryShown);
+    const svg = snapshotGraphSVG(g, select, can('operator') ? forget : null);
     return [g.error ? h('div', { class: 'banner warn' }, g.error) : null,
-      h('div', { class: 'graph-wrap' }, svg), graphLegend(), details];
+      h('div', { class: 'graph-wrap' }, svg),
+      h('div', { class: 'row' }, graphLegend(), h('span', { style: 'flex:1' }),
+        shown.length && can('operator') ? h('button', { class: 'sm', type: 'button', title: 'Убрать со схемы линии прошлых откатов', onclick: () => forget(null) }, 'Очистить историю откатов') : null),
+      details];
   };
 
   const load = async () => {
@@ -1052,7 +1068,9 @@ function graphLegend() {
 
 // snapshotGraphSVG draws the snapshot history: the main line (oldest → now),
 // clones branching off snapshots, and lines abandoned by rollbacks.
-function snapshotGraphSVG(g, onSelect) {
+const graphHistoryShown = (ev) => ev.type === 'rollback' && (ev.lost && ev.lost.length || ev.branch);
+
+function snapshotGraphSVG(g, onSelect, onForget) {
   const NS = 'http://www.w3.org/2000/svg';
   const el = (tag, attrs, ...kids) => {
     const n = document.createElementNS(NS, tag);
@@ -1071,7 +1089,7 @@ function snapshotGraphSVG(g, onSelect) {
   const nowX = X0 + snaps.length * STEP;
   const lanes = []; // extra rows under the main line
   const branches = g.branches || [];
-  const history = (g.history || []).filter((ev) => ev.type === 'rollback' && (ev.lost && ev.lost.length || ev.branch));
+  const history = (g.history || []).filter(graphHistoryShown);
   let lane = 0;
   let maxX = nowX + 80;
   const layers = { lines: el('g'), nodes: el('g'), labels: el('g') };
@@ -1145,6 +1163,16 @@ function snapshotGraphSVG(g, onSelect) {
     const label = '↺ откат к ' + ev.to + ' · ' + when + ' · ' + ev.user;
     layers.labels.append(el('text', { x: end + 10, y: y + 4, class: 'g-sub left' }, label));
     maxX = Math.max(maxX, end + 20 + label.length * 6.5);
+    if (onForget) {
+      const bx = end + 24 + label.length * 6.5;
+      const del = el('g', { class: 'g-del', tabindex: 0, role: 'button', 'aria-label': 'Убрать со схемы' },
+        el('title', null, 'Убрать этот откат со схемы'), el('circle', { cx: bx, cy: y, r: 10 }), el('text', { x: bx, y: y + 4 }, '✕'));
+      const go = () => onForget(ev);
+      del.addEventListener('click', go);
+      del.addEventListener('keydown', (k) => { if (k.key === 'Enter' || k.key === ' ') { k.preventDefault(); go(); } });
+      layers.nodes.append(del);
+      maxX = Math.max(maxX, bx + 20);
+    }
   }
   const width = Math.ceil(maxX);
   const height = Y0 + 40 + lane * LANE;

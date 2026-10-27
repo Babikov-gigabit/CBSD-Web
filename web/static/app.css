@@ -228,6 +228,11 @@ code.mono { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; wo
 .snap-graph .g-name { font-weight: 600; font-family: var(--mono); font-size: 11.5px; }
 .snap-graph .g-sub { fill: var(--muted); font-size: 11px; }
 .snap-graph .g-sub.left { text-anchor: start; }
+.snap-graph .g-del { cursor: pointer; }
+.snap-graph .g-del circle { fill: var(--panel); stroke: var(--border); }
+.snap-graph .g-del text { fill: var(--muted); font-size: 11px; text-anchor: middle; }
+.snap-graph .g-del:hover circle, .snap-graph .g-del:focus circle { stroke: var(--err); }
+.snap-graph .g-del:hover text, .snap-graph .g-del:focus text { fill: var(--err); }
 .snap-graph .pill-node rect { fill: var(--info-bg); stroke: var(--info); }
 .snap-graph .pill-node.parent rect { fill: var(--panel-2); stroke: var(--muted); }
 .snap-graph .pill-node text { text-anchor: start; font-weight: 600; }

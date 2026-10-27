@@ -1,6 +1,7 @@
 package server
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -132,5 +133,43 @@ func TestOpenSnapshotAsJail(t *testing.T) {
 	}
 	if ev := hist[0].(map[string]any); ev["type"] != "try" || ev["branch"] != nil || ev["kept"] != "before_try" {
 		t.Errorf("event: %v", ev)
+	}
+}
+
+func TestSnapshotHistoryDelete(t *testing.T) {
+	_, newClient := setup(t)
+	useFakeTools(t)
+	view, admin := newClient("view"), newClient("admin")
+	for _, snap := range []string{"web20251001093000", "before-upgrade"} {
+		_, m := admin.do("POST", "/api/envs/web1/snapshots", map[string]string{"mode": "rollback", "snapname": snap}, nil)
+		jobOutput(t, admin, m)
+	}
+	history := func() []any {
+		_, g := view.do("GET", "/api/envs/web1/snapshots/graph", nil, nil)
+		h, _ := g["history"].([]any)
+		return h
+	}
+	h := history()
+	if len(h) != 2 {
+		t.Fatalf("history: %v", h)
+	}
+	at := url.QueryEscape(h[0].(map[string]any)["at"].(string))
+	if resp, m := view.do("DELETE", "/api/envs/web1/snapshots/history?at="+at, nil, nil); resp.StatusCode != 403 {
+		t.Errorf("viewer: %d %v", resp.StatusCode, m)
+	}
+	if resp, m := admin.do("DELETE", "/api/envs/web1/snapshots/history?at="+at, nil, nil); resp.StatusCode != 200 || m["removed"] != float64(1) {
+		t.Fatalf("delete one: %d %v", resp.StatusCode, m)
+	}
+	if h := history(); len(h) != 1 || h[0].(map[string]any)["to"] != "before-upgrade" {
+		t.Fatalf("after one: %v", h)
+	}
+	if resp, _ := admin.do("DELETE", "/api/envs/web1/snapshots/history?at="+at, nil, nil); resp.StatusCode != 404 {
+		t.Errorf("repeat: %d", resp.StatusCode)
+	}
+	if resp, m := admin.do("DELETE", "/api/envs/web1/snapshots/history", nil, nil); resp.StatusCode != 200 || m["removed"] != float64(1) {
+		t.Fatalf("delete all: %d %v", resp.StatusCode, m)
+	}
+	if h := history(); len(h) != 0 {
+		t.Fatalf("after all: %v", h)
 	}
 }
