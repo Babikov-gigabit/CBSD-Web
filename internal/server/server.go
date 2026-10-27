@@ -100,6 +100,8 @@ func (s *Server) Handler() http.Handler {
 	s.route(mux, "GET /api/envs/{name}/terminal", v, s.handleTerminal)
 	s.route(mux, "GET /api/envs/{name}/stats", v, s.handleEnvStats)
 	s.route(mux, "GET /api/envs/{name}/logs", o, s.handleEnvLogs)
+	s.route(mux, "GET /api/envs/{name}/media", v, s.handleVMMedia)
+	s.route(mux, "POST /api/envs/{name}/media", o, s.handleVMMediaAction)
 	s.route(mux, "GET /api/envs/{name}/vnc", v, s.handleVNCInfo)
 	s.route(mux, "GET /api/envs/{name}/vnc/ws", v, s.handleVNCProxy)
 	s.route(mux, "GET /api/envs/{name}/snapshots", v, s.handleSnapshotList)

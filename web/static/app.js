@@ -818,13 +818,68 @@ function envOverview(e, keep) {
   keep.stats.update(e);
   if ((e.emulator === 'jail' || e.emulator === 'bhyve') && !keep.snaps) keep.snaps = snapshotCard(e);
   if (keep.snaps && keep.snaps.dirty) keep.snaps.load();
-  const vnc = e.emulator === 'bhyve' || e.emulator === 'xen' ? vncCard(e, keep) : null;
+  const isVM = e.emulator === 'bhyve' || e.emulator === 'xen';
+  const vnc = isVM ? vncCard(e, keep) : null;
+  if (isVM && !keep.install) keep.install = installCard(e);
+  if (keep.install) keep.install.update(e);
   return [
+    keep.install ? keep.install.el : null,
     h('div', { class: 'grid cols-2' },
       h('div', { class: 'card' }, h('h2', null, 'Параметры'), h('dl', { class: 'kv' }, info.map(([k, v]) => [h('dt', null, k), h('dd', null, v)]))),
       vnc, keep.stats.el),
     keep.snaps ? keep.snaps.el : null,
   ];
+}
+
+// installCard walks through installing an OS from an ISO: attach the ISO,
+// boot from it and use the VNC console, then switch to the disk.
+function installCard(e) {
+  const enc = encodeURIComponent(e.jname);
+  const el = h('div', { class: 'card', style: 'margin-bottom:14px' });
+  let status = null, loading = false;
+  const act = async (body) => {
+    try { await runAction('POST', '/api/envs/' + enc + '/media', body); } catch (err) { fail(err); }
+    status = null; // reload when the page refreshes after the job
+  };
+  const load = async () => {
+    if (loading) return;
+    loading = true;
+    try { render(await api('GET', '/api/envs/' + enc + '/media')); } catch (err) { fill(el, h('h2', null, 'Установка ОС'), h('div', { class: 'banner warn' }, err.message)); } finally { loading = false; }
+  };
+  const render = (m) => {
+    const iso = m.attached[0];
+    const fromCD = m.boot === 'cd';
+    const op = can('operator');
+    const step = (n, done, title, ...body) => h('li', { class: done ? 'done' : '' }, h('b', null, (done ? '✓ ' : n + '. ') + title), h('div', { class: 'muted small' }, body));
+    const sel = h('select', null, m.available.map((i) => h('option', { value: i.media }, (i.file || i.media) + ' · ' + fmtBytes(i.size))));
+    fill(el,
+      h('div', { class: 'row', style: 'margin-bottom:8px' }, h('h2', { style: 'margin:0' }, 'Установка ОС'),
+        h('span', { class: 'pill ' + (fromCD ? 'run' : 'off') }, fromCD ? 'загрузка с ISO' : 'загрузка с диска'),
+        iso ? h('span', { class: 'pill on' }, 'ISO: ' + (iso.file || iso.media)) : h('span', { class: 'pill off' }, 'ISO не подключён')),
+      h('ol', { class: 'install-steps' },
+        step(1, !!iso, 'Подключите установочный ISO',
+          iso ? ['Подключён ', h('span', { class: 'mono' }, iso.file || iso.media), '. ',
+            op ? h('button', { class: 'sm', type: 'button', onclick: () => act({ action: 'eject' }) }, 'Извлечь') : null] : null,
+          op && m.available.length ? h('div', { class: 'row', style: 'margin-top:6px' }, sel,
+            h('button', { class: iso ? 'sm' : 'sm primary', type: 'button', onclick: () => act({ action: 'attach', iso: sel.value }) }, iso ? 'Заменить' : 'Подключить')) : null,
+          !m.available.length && !iso ? ['Загрузите образ в разделе ', h('a', { href: '#/images' }, '«Образы и ISO»'), '.'] : null),
+        step(2, fromCD && m.running, 'Запустите машину с ISO',
+          'Машина загрузится с ISO, даже если на диске уже что-то есть. ',
+          op ? h('button', { class: 'sm primary', type: 'button', disabled: !iso, title: iso ? '' : 'Сначала подключите ISO', onclick: () => act({ action: 'install' }) },
+            m.running ? '↻ Перезапустить с ISO' : '▶ Запустить с ISO') : null),
+        step(3, false, 'Установите ОС в консоли VNC',
+          m.cd_vnc_wait ? 'Машина ждёт подключения к консоли: установщик начнёт загружаться, когда вы её откроете. ' : '',
+          state.terminal && m.running ? h('a', { class: 'btn sm primary', href: '#/env/' + enc + '/vnc' }, '🖥 Открыть консоль') : null),
+        step(4, !fromCD && !iso, 'Когда установка закончится, загружайтесь с диска',
+          'Машина перезапустится с диска, ISO будет извлечён. ',
+          op ? h('button', { class: 'sm', type: 'button', disabled: !fromCD && !iso, onclick: () => act({ action: 'finish' }) }, '✓ Установка завершена') : null)));
+  };
+  return {
+    el,
+    update(env) {
+      if (status !== env.status) { status = env.status; load(); }
+    },
+  };
 }
 
 function copyBtn(text) {
@@ -1566,7 +1621,7 @@ async function pageJobs() {
 async function pageSetup() {
   const d = await api('GET', '/api/setup');
   const checks = h('div', { class: 'card checks' }, h('h2', null, 'Проверка системы'), h('ul', null, d.checks.map((c) => h('li', null,
-    h('span', { class: 'mark ' + (c.ok ? 'ok' : 'bad') }, c.ok ? '✓' : '✗'),
+    h('span', { class: 'mark ' + (c.ok ? 'ok' : c.warn ? 'warn' : 'bad') }, c.ok ? '✓' : c.warn ? '!' : '✗'),
     h('div', null, h('div', null, c.title, c.detail ? h('span', { class: 'muted mono small' }, '  ' + c.detail) : null),
       !c.ok && c.hint ? h('div', { class: 'muted small' }, c.hint) : null)))));
   const content = [pageHead('Установка и настройка'), checks];

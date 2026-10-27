@@ -764,6 +764,7 @@ type check struct {
 	ID     string `json:"id"`
 	Title  string `json:"title"`
 	OK     bool   `json:"ok"`
+	Warn   bool   `json:"warn,omitempty"` // a failed check that is only a notice
 	Detail string `json:"detail,omitempty"`
 	Hint   string `json:"hint,omitempty"`
 }
@@ -803,7 +804,20 @@ func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 	add(check{ID: "rcconf", Title: "Автозапуск cbsdd", OK: enabled, Hint: "sysrc cbsdd_enable=YES (initenv делает это сам)."})
 
 	hi := s.sys.Get(ctx)
-	add(check{ID: "vmm", Title: "Модуль vmm (bhyve)", OK: hi.VMMLoaded, Hint: "kldload vmm; sysrc kld_list+=vmm — нужно только для bhyve."})
+	vmmHint := "kldload vmm; sysrc kld_list+=vmm — нужно только для bhyve."
+	if hi.VMGuest != "" && hi.VMGuest != "none" {
+		vmmHint = "Сервер сам работает в виртуальной машине (" + hi.VMGuest + "), и ей не передана аппаратная виртуализация, поэтому vmm не загружается. " +
+			"Выключите эту ВМ и включите вложенную виртуализацию: в VirtualBox — VBoxManage modifyvm \"<имя>\" --nested-hw-virt on " +
+			"(или «Включить Nested VT-x/AMD-V» в настройках процессора), в VMware — «Virtualize Intel VT-x/EPT», в Proxmox/KVM — тип CPU host. Затем kldload vmm."
+	}
+	add(check{ID: "vmm", Title: "Модуль vmm (bhyve)", OK: hi.VMMLoaded, Hint: vmmHint})
+	_, terr := os.Stat("/usr/local/bin/tmux")
+	add(check{ID: "tmux", Title: "tmux (нужен для запуска ВМ bhyve)", OK: terr == nil, Detail: "/usr/local/bin/tmux",
+		Hint: "pkg install -y tmux (install.sh ставит его сам). Без tmux cbsd bstart не запускает ВМ."})
+	if hi.VMGuest != "" && hi.VMGuest != "none" {
+		add(check{ID: "vm_guest", Title: "Сервер работает на «железе»", OK: false, Warn: true, Detail: "виртуальная машина: " + hi.VMGuest,
+			Hint: "bhyve внутри виртуальной машины работает только со вложенной виртуализацией и медленнее. Для проверки подойдёт, для работы лучше физический сервер."})
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"checks": checks, "workdir": s.cfg.Workdir, "initialized": s.db.Exists("local")})
 }

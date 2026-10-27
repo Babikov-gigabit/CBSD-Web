@@ -26,7 +26,10 @@ type Info struct {
 	DiskTotal uint64    `json:"disk_total,omitempty"`
 	DiskFree  uint64    `json:"disk_free,omitempty"`
 	VMMLoaded bool      `json:"vmm_loaded"`
-	At        time.Time `json:"at"`
+	// VMGuest is kern.vm_guest: "none" on hardware, else the hypervisor
+	// this host itself runs under (vbox, vmware, kvm, ...).
+	VMGuest string    `json:"vm_guest,omitempty"`
+	At      time.Time `json:"at"`
 }
 
 // Collector caches host info for a few seconds so dashboards stay cheap.
@@ -63,6 +66,9 @@ func (c *Collector) Get(ctx context.Context) Info {
 			in.Uptime = parseBoottime(vals[5])
 		}
 		in.VMMLoaded = exec.CommandContext(ctx, "/sbin/kldstat", "-q", "-m", "vmm").Run() == nil
+		if v := sysctl(ctx, "kern.vm_guest"); len(v) == 1 {
+			in.VMGuest = v[0]
+		}
 	} else if b, err := os.ReadFile("/proc/loadavg"); err == nil {
 		in.Load = parseLoad(string(b))
 	}

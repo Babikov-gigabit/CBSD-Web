@@ -208,3 +208,51 @@ func TestVMConfig(t *testing.T) {
 		t.Errorf("xen output: %s", out)
 	}
 }
+
+func TestVMInstallFlow(t *testing.T) {
+	_, newClient := setup(t)
+	view, oper := newClient("view"), newClient("oper")
+
+	resp, m := view.do("GET", "/api/envs/vm_freebsd/media", nil, nil)
+	if resp.StatusCode != 200 || m["cd_vnc_wait"] != true || len(m["attached"].([]any)) != 1 {
+		t.Fatalf("media: %d %v", resp.StatusCode, m)
+	}
+	if resp, _ := view.do("POST", "/api/envs/vm_freebsd/media", map[string]string{"action": "eject"}, nil); resp.StatusCode != 403 {
+		t.Errorf("viewer action: %d", resp.StatusCode)
+	}
+	if resp, _ := view.do("GET", "/api/envs/build/media", nil, nil); resp.StatusCode != 400 {
+		t.Errorf("jail media: %d", resp.StatusCode)
+	}
+	if resp, m := oper.do("POST", "/api/envs/vm_debian/media", map[string]string{"action": "install"}, nil); resp.StatusCode != 422 || m["field"] != "iso" {
+		t.Errorf("install without ISO: %d %v", resp.StatusCode, m)
+	}
+	for _, bad := range []string{"nosuch", "x;reboot"} {
+		if resp, m := oper.do("POST", "/api/envs/vm_freebsd/media", map[string]string{"action": "attach", "iso": bad}, nil); resp.StatusCode != 422 {
+			t.Errorf("attach %q: %d %v", bad, resp.StatusCode, m)
+		}
+	}
+
+	for _, c := range []struct {
+		body map[string]string
+		want []string
+	}{
+		{map[string]string{"action": "attach", "iso": "web-alpine-3.20"}, []string{
+			"media mode=eject jname=vm_freebsd", "media mode=attach name=web-alpine-3.20", "bset jname=vm_freebsd vm_iso_path=web-alpine-3.20"}},
+		{map[string]string{"action": "install"}, []string{
+			"bstop jname=vm_freebsd", "bset jname=vm_freebsd vm_boot=cd", "bstart jname=vm_freebsd"}},
+		{map[string]string{"action": "finish"}, []string{
+			"bset jname=vm_freebsd vm_boot=hdd vm_iso_path=0", "media mode=eject jname=vm_freebsd", "bstart jname=vm_freebsd"}},
+		{map[string]string{"action": "eject"}, []string{"bset jname=vm_freebsd vm_iso_path=0"}},
+	} {
+		resp, m := oper.do("POST", "/api/envs/vm_freebsd/media", c.body, nil)
+		if resp.StatusCode != 202 {
+			t.Fatalf("%v: %d %v", c.body, resp.StatusCode, m)
+		}
+		out := jobOutput(t, oper, m)
+		for _, w := range c.want {
+			if !strings.Contains(out, w) {
+				t.Errorf("%v: missing %q in %s", c.body, w, out)
+			}
+		}
+	}
+}
