@@ -894,17 +894,30 @@ function snapshotCard(e) {
   const body = h('div', null, h('div', { class: 'muted' }, 'Загрузка списка снимков…'));
   const count = h('span', { class: 'tag' }, '…');
   const card = { dirty: false };
+  let view = 'graph';
+  let order = []; // snapshot names, oldest first, from the last load
   const after = async (p) => { try { await p; card.dirty = true; } catch (err) { fail(err); } };
   const snapOp = (mode, snap) => {
     const titles = { create: 'Создать снимок', rollback: 'Откатить к снимку', destroy: 'Удалить снимок', destroyall: 'Удалить все снимки' };
-    let nameIn = null;
+    let nameIn = null, saveBox = null, saveName = null;
     const parts = [];
     if (mode === 'create') {
       nameIn = h('input', { placeholder: 'необязательно: имя снимка (латиница, цифры, _.-)', autocomplete: 'off' });
       parts.push(h('p', { class: 'muted small' }, 'Снимок фиксирует текущее состояние данных. Пустое имя — по дате и времени.'), nameIn);
     } else if (mode === 'rollback') {
-      parts.push(h('div', { class: 'banner warn' }, 'Все изменения после снимка ', h('b', null, snap), ' будут потеряны, а более новые снимки удалены. ',
-        e.status === 1 ? 'Сначала остановите окружение.' : ''));
+      const i = order.indexOf(snap);
+      const newer = i >= 0 ? order.slice(i + 1) : [];
+      parts.push(h('div', { class: 'banner warn' }, 'Данные вернутся к состоянию снимка ', h('b', null, snap), '. Изменения после него будут потеряны',
+        newer.length ? [', а более новые снимки удалены: ', h('b', null, newer.join(', '))] : '', '. ',
+        e.status === 1 ? 'Окружение запущено: лучше сначала остановить его.' : ''));
+      if (e.emulator === 'jail') {
+        saveName = h('input', { value: e.jname + '_' + new Date().toISOString().slice(0, 10).replace(/-/g, ''), autocomplete: 'off', spellcheck: 'false' });
+        saveBox = h('input', { type: 'checkbox', id: 'save_branch', checked: true });
+        parts.push(h('div', { class: 'field check' }, saveBox, h('label', { for: 'save_branch' }, 'Сохранить текущее состояние как ветку (новая клетка)')),
+          h('div', { class: 'field' }, h('label', null, 'Имя клетки для ветки'), saveName,
+            h('div', { class: 'help' }, 'Копия делается через rsync до отката, поэтому не зависит от удаляемых снимков. Появится на схеме как ветка.')));
+        saveBox.addEventListener('change', () => { saveName.disabled = !saveBox.checked; });
+      }
     } else if (mode === 'destroy') {
       parts.push(h('p', null, 'Снимок ', h('b', null, snap), ' будет удалён без возможности восстановления.'));
     } else {
@@ -912,49 +925,91 @@ function snapshotCard(e) {
     }
     modal(titles[mode] + ' — ' + e.jname, h('div', null, parts), [
       { text: 'Отмена' },
-      { text: titles[mode], class: mode === 'create' ? 'primary' : 'danger', onClick: () => after(runAction('POST', url, { mode, snapname: mode === 'create' ? nameIn.value.trim() : snap || '' })) },
+      { text: titles[mode], class: mode === 'create' ? 'primary' : 'danger', onClick: async () => {
+        const req = { mode, snapname: mode === 'create' ? nameIn.value.trim() : snap || '' };
+        if (saveBox && saveBox.checked) req.save_as = saveName.value.trim();
+        try { await runAction('POST', url, req); card.dirty = true; } catch (err) {
+          if (err.field === 'save_as' && saveName) { saveName.focus(); toast(err.message, 'err'); return false; }
+          fail(err);
+        }
+      } },
     ]);
   };
-  const load = async () => {
-    card.dirty = false;
-    fill(body, h('div', { class: 'muted' }, 'Загрузка списка снимков…'));
-    let r;
-    try { r = await api('GET', url); } catch (err) { fill(body, h('div', { class: 'muted' }, err.message)); return; }
+  const locationRow = (s, cols) => h('tr', { class: 'snap-loc', hidden: true }, h('td', { colspan: cols },
+    h('dl', { class: 'kv' },
+      h('dt', null, 'Снимок ZFS'), h('dd', null, h('code', { class: 'mono' }, s.dataset + '@' + s.name), ' ', copyBtn(s.dataset + '@' + s.name)),
+      h('dt', null, 'Набор данных'), h('dd', { class: 'mono' }, s.dataset),
+      s.path ? [h('dt', null, 'Файлы снимка'), h('dd', null, h('code', { class: 'mono' }, s.path), ' ', copyBtn(s.path))] : null),
+    h('div', { class: 'muted small' }, s.path
+      ? 'Каталог доступен только для чтения: из него можно скопировать отдельные файлы, не откатывая всю клетку (например, cp ' + s.path + '/etc/rc.conf /tmp/).'
+      : 'Снимок диска ВМ; файлы внутри доступны после клонирования или отката.')));
+  const actions = (name) => [
+    can('admin') ? h('button', { class: 'sm', type: 'button', onclick: () => snapOp('rollback', name) }, 'Откатить') : null,
+    can('admin') ? h('button', { class: 'sm danger', type: 'button', onclick: () => snapOp('destroy', name) }, 'Удалить') : null];
+
+  const loadTable = async () => {
+    const r = await api('GET', url);
     const list = r.snapshots || [];
+    order = list.map((s) => s.name);
     count.textContent = String(list.length);
     if (!list.length) {
-      fill(body, r.error ? h('div', { class: 'banner warn' }, r.error) : null,
-        h('div', { class: 'empty' }, 'Снимков пока нет.', r.text ? h('pre', { class: 'mono small' }, r.text) : null));
-      return;
+      return [r.error ? h('div', { class: 'banner warn' }, r.error) : null,
+        h('div', { class: 'empty' }, 'Снимков пока нет.', r.text ? h('pre', { class: 'mono small' }, r.text) : null)];
     }
     const rows = [];
     for (const s of list) {
-      const loc = h('tr', { class: 'snap-loc', hidden: true }, h('td', { colspan: 5 },
-        h('dl', { class: 'kv' },
-          h('dt', null, 'Снимок ZFS'), h('dd', null, h('code', { class: 'mono' }, s.dataset + '@' + s.name), ' ', copyBtn(s.dataset + '@' + s.name)),
-          h('dt', null, 'Набор данных'), h('dd', { class: 'mono' }, s.dataset),
-          s.path ? [h('dt', null, 'Файлы снимка'), h('dd', null, h('code', { class: 'mono' }, s.path), ' ', copyBtn(s.path))] : null),
-        h('div', { class: 'muted small' }, s.path
-          ? 'Каталог доступен только для чтения: из него можно скопировать отдельные файлы, не откатывая всю клетку (например, cp ' + s.path + '/etc/rc.conf /tmp/).'
-          : 'Снимок диска ВМ; файлы внутри доступны после клонирования или отката.')));
+      const loc = locationRow(s, 5);
       rows.push(h('tr', null,
         h('td', null, h('div', { class: 'mono' }, s.name)),
         h('td', null, s.created || '—'),
         h('td', null, s.refer || '—'),
         h('td', null, s.used ? fmtBytes(s.used) : '—'),
         h('td', { class: 'actions' }, h('div', { class: 'btn-group' },
-          h('button', { class: 'sm', type: 'button', onclick: () => { loc.hidden = !loc.hidden; } }, 'Расположение'),
-          can('admin') ? h('button', { class: 'sm', type: 'button', onclick: () => snapOp('rollback', s.name) }, 'Откатить') : null,
-          can('admin') ? h('button', { class: 'sm danger', type: 'button', onclick: () => snapOp('destroy', s.name) }, 'Удалить') : null))), loc);
+          h('button', { class: 'sm', type: 'button', onclick: () => { loc.hidden = !loc.hidden; } }, 'Расположение'), actions(s.name)))), loc);
     }
-    fill(body, r.error ? h('div', { class: 'banner warn' }, r.error) : null,
+    return [r.error ? h('div', { class: 'banner warn' }, r.error) : null,
       h('div', { class: 'table-wrap' }, h('table', null,
         h('thead', null, h('tr', null, h('th', null, 'Имя'), h('th', null, 'Создан'), h('th', { title: 'Объём данных на момент снимка' }, 'Данные'),
           h('th', { title: 'Место, которое освободится при удалении снимка' }, 'Занимает'), h('th', null, ''))),
-        h('tbody', null, rows))));
+        h('tbody', null, rows)))];
   };
+
+  const loadGraph = async () => {
+    const g = await api('GET', url + '/graph');
+    const snaps = g.snapshots || [];
+    order = snaps.map((s) => s.name);
+    count.textContent = String(snaps.length);
+    if (g.error && !snaps.length) return h('div', { class: 'banner warn' }, g.error);
+    const details = h('div', { class: 'snap-detail' }, h('div', { class: 'muted small' }, 'Нажмите на точку на схеме, чтобы увидеть подробности и действия.'));
+    const select = (s) => {
+      const loc = { name: s.name, dataset: g.dataset, path: null };
+      fill(details, h('div', { class: 'row' }, h('b', { class: 'mono' }, s.name), s.cbsd ? null : h('span', { class: 'tag', title: 'Снимок сделан не через CBSD' }, 'ZFS'),
+        h('span', { style: 'flex:1' }), s.cbsd ? actions(s.name) : null),
+        h('dl', { class: 'kv mt' },
+          h('dt', null, 'Создан'), h('dd', null, fmtTime(new Date(s.created * 1000).toISOString())),
+          h('dt', null, 'Изменений с прошлого снимка'), h('dd', null, fmtBytes(s.written)),
+          h('dt', null, 'Данные в снимке'), h('dd', null, fmtBytes(s.refer)),
+          h('dt', null, 'Освободится при удалении'), h('dd', null, fmtBytes(s.used)),
+          h('dt', null, 'Снимок ZFS'), h('dd', null, h('code', { class: 'mono' }, loc.dataset + '@' + s.name), ' ', copyBtn(loc.dataset + '@' + s.name))));
+    };
+    const svg = snapshotGraphSVG(g, select);
+    return [g.error ? h('div', { class: 'banner warn' }, g.error) : null,
+      h('div', { class: 'graph-wrap' }, svg), graphLegend(), details];
+  };
+
+  const load = async () => {
+    card.dirty = false;
+    fill(body, h('div', { class: 'muted' }, 'Загрузка…'));
+    try { fill(body, view === 'graph' ? await loadGraph() : await loadTable()); } catch (err) { fill(body, h('div', { class: 'muted' }, err.message)); }
+  };
+  const viewBtn = (v, text) => h('button', { class: 'sm' + (view === v ? ' active' : ''), type: 'button', 'data-view': v, onclick: (ev) => {
+    view = v;
+    for (const b of ev.target.parentNode.children) b.classList.toggle('active', b.dataset.view === v);
+    load();
+  } }, text);
   card.el = h('section', { class: 'card mt' },
-    h('div', { class: 'row', style: 'margin-bottom:12px' }, h('h2', { style: 'margin:0' }, 'Снимки ZFS'), count, h('span', { style: 'flex:1' }),
+    h('div', { class: 'row', style: 'margin-bottom:12px' }, h('h2', { style: 'margin:0' }, 'Снимки ZFS'), count,
+      h('div', { class: 'seg' }, viewBtn('graph', 'Схема'), viewBtn('table', 'Таблица')), h('span', { style: 'flex:1' }),
       h('button', { class: 'sm', type: 'button', onclick: load }, '↻ Обновить'),
       can('operator') ? h('button', { class: 'sm primary', type: 'button', onclick: () => snapOp('create') }, '+ Создать снимок') : null,
       can('admin') ? h('button', { class: 'sm danger', type: 'button', onclick: () => snapOp('destroyall') }, 'Удалить все') : null),
@@ -963,6 +1018,117 @@ function snapshotCard(e) {
   load();
   return card;
 }
+
+function graphLegend() {
+  const item = (cls, text) => h('span', { class: 'lg' }, h('i', { class: cls }), text);
+  return h('div', { class: 'graph-legend small muted' },
+    item('lg-main', 'снимки окружения'), item('lg-now', 'текущее состояние'), item('lg-zfs', 'снимок не из CBSD'),
+    item('lg-branch', 'ветка: окружение, созданное из снимка'), item('lg-ghost', 'потеряно при откате'),
+    h('span', null, 'Размер точки — объём изменений с предыдущего снимка.'));
+}
+
+// snapshotGraphSVG draws the snapshot history: the main line (oldest → now),
+// clones branching off snapshots, and lines abandoned by rollbacks.
+function snapshotGraphSVG(g, onSelect) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const el = (tag, attrs, ...kids) => {
+    const n = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs || {})) if (v != null) n.setAttribute(k, v);
+    for (const c of kids) if (c != null) n.append(c instanceof Node ? c : document.createTextNode(String(c)));
+    return n;
+  };
+  const link = (href, ...kids) => el('a', { href }, ...kids);
+  const snaps = g.snapshots || [];
+  const STEP = 150, X0 = g.parent ? 210 : 70, Y0 = 92, LANE = 64;
+  const radius = (bytes) => 6 + Math.min(12, Math.max(0, Math.log2((bytes || 0) / 1048576 + 1) * 1.6));
+  const short = (s, n = 20) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+  const day = (t) => { const d = new Date(t * 1000); return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit' }) + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }); };
+  const pos = {};
+  snaps.forEach((s, i) => { pos[s.name] = X0 + i * STEP; });
+  const nowX = X0 + snaps.length * STEP;
+  const lanes = []; // extra rows under the main line
+  const branches = g.branches || [];
+  const history = (g.history || []).filter((ev) => ev.type === 'rollback' && (ev.lost && ev.lost.length || ev.branch));
+  let lane = 0;
+  let maxX = nowX + 80;
+  const layers = { lines: el('g'), nodes: el('g'), labels: el('g') };
+  const curve = (x1, y1, x2, y2, cls) => layers.lines.append(el('path', { d: `M${x1},${y1} L${x1},${y2 - 22} Q${x1},${y2} ${x1 + 22},${y2} L${x2},${y2}`, class: cls }));
+  const pill = (x, y, text, href, cls, title) => {
+    const w = Math.max(70, text.length * 7.2 + 22);
+    const g2 = el('g', { class: 'pill-node ' + (cls || '') }, el('title', null, title || text),
+      el('rect', { x, y: y - 13, width: w, height: 26, rx: 13 }), el('text', { x: x + 11, y: y + 4 }, text));
+    layers.nodes.append(href ? link(href, g2) : g2);
+    maxX = Math.max(maxX, x + w + 20);
+    return x + w;
+  };
+
+  // Parent: this environment was itself cloned from another snapshot.
+  if (g.parent) {
+    const p = g.parent;
+    pill(14, Y0, '⎇ ' + short((p.env || p.dataset) + '@' + p.snap, 22), p.env ? '#/env/' + encodeURIComponent(p.env) : null, 'parent', 'Создано из снимка ' + p.dataset + '@' + p.snap);
+    layers.lines.append(el('line', { x1: 170, y1: Y0, x2: X0, y2: Y0, class: 'g-main dashed' }));
+  }
+  // Main line.
+  if (snaps.length) layers.lines.append(el('line', { x1: X0, y1: Y0, x2: nowX, y2: Y0, class: 'g-main' }));
+  snaps.forEach((s) => {
+    const x = pos[s.name];
+    const c = el('circle', { cx: x, cy: Y0, r: radius(s.written), class: 'g-node' + (s.cbsd ? '' : ' zfs'), tabindex: 0 });
+    c.append(el('title', null, s.name + '\n' + day(s.created) + '\nизменений: ' + fmtBytes(s.written)));
+    const pick = () => { for (const n of layers.nodes.querySelectorAll('.sel')) n.classList.remove('sel'); c.classList.add('sel'); onSelect(s); };
+    c.addEventListener('click', pick);
+    c.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); pick(); } });
+    layers.nodes.append(c);
+    // Labels sit above the line so branch curves below never cross them.
+    layers.labels.append(el('text', { x, y: Y0 - 54, class: 'g-name' }, short(s.name)),
+      el('text', { x, y: Y0 - 39, class: 'g-sub' }, day(s.created)),
+      el('text', { x, y: Y0 - 25, class: 'g-sub' }, '+' + fmtBytes(s.written)));
+  });
+  // Current state.
+  const cur = g.current || {};
+  layers.nodes.append(el('rect', { x: nowX - 9, y: Y0 - 9, width: 18, height: 18, rx: 4, class: 'g-now' }, el('title', null, 'Текущее состояние')));
+  layers.labels.append(el('text', { x: nowX, y: Y0 - 54, class: 'g-name' }, 'сейчас'),
+    el('text', { x: nowX, y: Y0 - 39, class: 'g-sub' }, snaps.length ? 'изменено после снимка' : 'снимков нет'),
+    el('text', { x: nowX, y: Y0 - 25, class: 'g-sub' }, snaps.length ? '+' + fmtBytes(cur.written) : ''));
+
+  // Branches: clones made from a snapshot (jclone, or zfs clone).
+  for (const b of branches) {
+    const x = pos[b.snap];
+    if (x == null) continue;
+    lane++;
+    const y = Y0 + 10 + lane * LANE;
+    curve(x, Y0, x + 60, y, 'g-branch');
+    pill(x + 60, y, '⎇ ' + short(b.env || b.dataset, 24), b.env ? '#/env/' + encodeURIComponent(b.env) : null, 'branch',
+      'Создано из ' + b.snap + (b.env ? ': окружение ' + b.env : ': набор ' + b.dataset));
+  }
+  // Rollbacks: the snapshots they destroyed stay visible as an abandoned line.
+  for (const ev of history) {
+    lane++;
+    const y = Y0 + 10 + lane * LANE;
+    const x = pos[ev.to] != null ? pos[ev.to] : X0;
+    curve(x, Y0, x + 60, y, 'g-ghost');
+    let cx = x + 60;
+    for (const l of ev.lost || []) {
+      cx += 70;
+      layers.lines.append(el('line', { x1: cx - 70, y1: y, x2: cx, y2: y, class: 'g-ghost' }));
+      layers.nodes.append(el('circle', { cx, cy: y, r: radius(l.written), class: 'g-node ghost' }, el('title', null, l.name + ' (удалён при откате)' + (l.created ? '\n' + l.created : ''))));
+      layers.labels.append(el('text', { x: cx, y: y - 18, class: 'g-sub' }, short(l.name, 16)));
+    }
+    cx += 40;
+    layers.lines.append(el('line', { x1: cx - 40, y1: y, x2: cx, y2: y, class: 'g-ghost' }));
+    const when = new Date(ev.at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const end = ev.branch
+      ? pill(cx, y, '⎇ сохранено: ' + ev.branch, '#/env/' + encodeURIComponent(ev.branch), 'branch', 'Состояние до отката сохранено как клетка ' + ev.branch)
+      : cx;
+    const label = '↺ откат к ' + ev.to + ' · ' + when + ' · ' + ev.user;
+    layers.labels.append(el('text', { x: end + 10, y: y + 4, class: 'g-sub left' }, label));
+    maxX = Math.max(maxX, end + 20 + label.length * 6.5);
+  }
+  const width = Math.ceil(maxX);
+  const height = Y0 + 40 + lane * LANE;
+  return el('svg', { class: 'snap-graph', width, height, viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': 'Схема снимков' },
+    layers.lines, layers.nodes, layers.labels);
+}
+
 
 function editEnv(e) {
   const fields = [{ name: 'astart', label: 'Автозапуск при загрузке хоста', type: 'checkbox', value: e.astart, full: true }];

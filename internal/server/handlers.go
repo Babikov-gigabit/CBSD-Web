@@ -238,30 +238,46 @@ func (s *Server) handleEnv(w http.ResponseWriter, r *http.Request) {
 
 // submit starts a cbsd job, audits it and answers 202 with the job.
 func (s *Server) submit(w http.ResponseWriter, r *http.Request, title, target string, args []string, cleanup func()) {
-	rc := sessionFrom(r)
-	run := func(ctx context.Context, out io.Writer) error {
+	s.submitSteps(w, r, title, target, [][]string{args}, func(error) {
 		if cleanup != nil {
-			defer cleanup()
+			cleanup()
 		}
-		fmt.Fprintf(out, "$ cbsd %s\n", strings.Join(args, " "))
-		st := &ansiStripper{w: out}
-		err := s.runner.Stream(ctx, st, args...)
-		st.Flush()
-		if err != nil {
-			return fmt.Errorf("cbsd %s: %w", args[0], err)
+	})
+}
+
+// submitSteps runs several cbsd commands in one job, stopping at the first
+// failure. onDone (if set) always runs with the job's result.
+func (s *Server) submitSteps(w http.ResponseWriter, r *http.Request, title, target string, steps [][]string, onDone func(error)) {
+	rc := sessionFrom(r)
+	run := func(ctx context.Context, out io.Writer) (err error) {
+		if onDone != nil {
+			defer func() { onDone(err) }()
+		}
+		for _, args := range steps {
+			fmt.Fprintf(out, "$ cbsd %s\n", strings.Join(args, " "))
+			st := &ansiStripper{w: out}
+			err := s.runner.Stream(ctx, st, args...)
+			st.Flush()
+			if err != nil {
+				return fmt.Errorf("cbsd %s: %w", args[0], err)
+			}
 		}
 		return nil
 	}
 	j, err := s.jobs.Submit(rc.sess.User, title, target, run)
 	if err != nil {
-		if cleanup != nil {
-			cleanup()
+		if onDone != nil {
+			onDone(err)
 		}
 		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}
+	cmds := make([]string, len(steps))
+	for i, st := range steps {
+		cmds[i] = st[0]
+	}
 	s.audit.Log(audit.Entry{User: rc.sess.User, IP: rc.ip, Event: "job.start", Target: target,
-		Detail: map[string]string{"job": j.ID, "title": title, "cmd": args[0]}})
+		Detail: map[string]string{"job": j.ID, "title": title, "cmd": strings.Join(cmds, ",")}})
 	writeJSON(w, http.StatusAccepted, map[string]any{"job": j.Snapshot()})
 }
 
@@ -387,6 +403,7 @@ func (s *Server) handleSnapshotList(w http.ResponseWriter, r *http.Request) {
 type snapReq struct {
 	Mode     string `json:"mode"`
 	SnapName string `json:"snapname"`
+	SaveAs   string `json:"save_as,omitempty"` // rollback: keep the current state as this new jail
 }
 
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -401,6 +418,10 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Mode != "create" && !sessionFrom(r).sess.Role.Allows(auth.RoleAdmin) {
 		writeErr(w, http.StatusForbidden, "откат и удаление снимков доступны только администратору")
+		return
+	}
+	if req.Mode == "rollback" {
+		s.rollback(w, r, e, req.SnapName, req.SaveAs)
 		return
 	}
 	if req.Mode == "destroyall" {

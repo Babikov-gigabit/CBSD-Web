@@ -19,6 +19,7 @@ import (
 	"github.com/cbsd-web/cbsd-web/internal/cbsd"
 	"github.com/cbsd-web/cbsd-web/internal/config"
 	"github.com/cbsd-web/cbsd-web/internal/jobs"
+	"github.com/cbsd-web/cbsd-web/internal/snaphist"
 	"github.com/cbsd-web/cbsd-web/internal/sysinfo"
 )
 
@@ -35,6 +36,7 @@ type Server struct {
 	sys      *sysinfo.Collector
 	static   *staticFS
 	terms    terminals
+	hist     *snaphist.Store
 	version  string
 }
 
@@ -56,6 +58,10 @@ func New(cfg *config.Config, users *auth.Store, al *audit.Logger, version string
 		sys:      sysinfo.NewCollector(cfg.Workdir),
 		static:   st,
 		version:  version,
+	}
+	if s.hist, err = snaphist.Open(filepath.Join(cfg.DataDir, "snapshot-history.json")); err != nil {
+		log.Printf("snapshot history: %v (starting empty)", err)
+		s.hist = snaphist.NewAt(filepath.Join(cfg.DataDir, "snapshot-history.json"))
 	}
 	s.jobs.OnEnd = func(j jobs.Snapshot) {
 		s.audit.Log(audit.Entry{User: j.User, Event: "job.end", Target: j.Target, Result: string(j.State),
@@ -96,6 +102,7 @@ func (s *Server) Handler() http.Handler {
 	s.route(mux, "GET /api/envs/{name}/vnc/ws", v, s.handleVNCProxy)
 	s.route(mux, "GET /api/envs/{name}/snapshots", v, s.handleSnapshotList)
 	s.route(mux, "POST /api/envs/{name}/snapshots", o, s.handleSnapshot)
+	s.route(mux, "GET /api/envs/{name}/snapshots/graph", v, s.handleSnapshotGraph)
 	s.route(mux, "POST /api/envs/{name}/clone", o, s.handleClone)
 	s.route(mux, "POST /api/jails", o, s.handleJailCreate)
 	s.route(mux, "POST /api/vms/{emulator}", o, s.handleVMCreate)

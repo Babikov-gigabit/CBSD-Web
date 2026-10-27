@@ -207,3 +207,37 @@ code.mono { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; wo
 /* VNC */
 .vnc-box { background: #0d1117; border-radius: var(--radius); height: calc(100vh - 190px); min-height: 320px; overflow: hidden; }
 .vnc-box:fullscreen { border-radius: 0; height: 100vh; }
+
+/* snapshot graph */
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; }
+.seg button.active { background: var(--panel-2); font-weight: 600; }
+.graph-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); }
+.snap-graph { display: block; font: 12px system-ui, sans-serif; }
+.snap-graph .g-main { stroke: var(--accent); stroke-width: 3; fill: none; }
+.snap-graph .g-main.dashed { stroke-dasharray: 5 4; stroke-width: 2; }
+.snap-graph .g-branch { stroke: var(--info); stroke-width: 2.5; fill: none; }
+.snap-graph .g-ghost { stroke: var(--muted); stroke-width: 2; stroke-dasharray: 4 4; fill: none; opacity: .7; }
+.snap-graph .g-node { fill: var(--accent); stroke: var(--panel); stroke-width: 3; cursor: pointer; }
+.snap-graph .g-node.zfs { fill: var(--panel); stroke: var(--accent); stroke-width: 2.5; }
+.snap-graph .g-node.ghost { fill: var(--idle-bg); stroke: var(--muted); stroke-width: 2; stroke-dasharray: 3 2; cursor: default; }
+.snap-graph .g-node:hover, .snap-graph .g-node:focus { stroke: var(--info); outline: none; }
+.snap-graph .g-node.sel { stroke: var(--info); stroke-width: 4; }
+.snap-graph .g-now { fill: var(--ok); }
+.snap-graph text { fill: var(--text); text-anchor: middle; }
+.snap-graph .g-name { font-weight: 600; font-family: var(--mono); font-size: 11.5px; }
+.snap-graph .g-sub { fill: var(--muted); font-size: 11px; }
+.snap-graph .g-sub.left { text-anchor: start; }
+.snap-graph .pill-node rect { fill: var(--info-bg); stroke: var(--info); }
+.snap-graph .pill-node.parent rect { fill: var(--panel-2); stroke: var(--muted); }
+.snap-graph .pill-node text { text-anchor: start; font-weight: 600; }
+.snap-graph a:hover rect { stroke-width: 2; }
+.graph-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 10px 2px; align-items: center; }
+.graph-legend .lg { display: inline-flex; gap: 6px; align-items: center; }
+.graph-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 50%; }
+.lg-main { background: var(--accent); }
+.lg-now { background: var(--ok); border-radius: 3px !important; }
+.lg-zfs { border: 2px solid var(--accent); }
+.lg-branch { background: var(--info-bg); border: 2px solid var(--info); }
+.lg-ghost { border: 2px dashed var(--muted); }
+.snap-detail { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }

@@ -55,3 +55,21 @@ func TestParsePsAndDataset(t *testing.T) {
 		t.Fatalf("%+v", d)
 	}
 }
+
+func TestParseZFSGraph(t *testing.T) {
+	s := parseZSnaps("zroot/j/web1@a\t1700000000\t100\t2000\t5000\nzroot/j/web1@b\t1700000100\t0\t300\t5100\n")
+	if len(s) != 2 || s[0].Name != "a" || s[0].Written != 2000 || s[1].Created != 1700000100 {
+		t.Fatalf("%+v", s)
+	}
+	p := parseProps("origin\tzroot/j/base@x\nwritten\t4096\nused\t9000\nreferenced\t8000\n")
+	if p.Origin != "zroot/j/base@x" || p.Written != 4096 || p.Refer != 8000 {
+		t.Fatalf("%+v", p)
+	}
+	if parseProps("origin\t-\n").Origin != "" {
+		t.Error("origin '-'")
+	}
+	c := parseClones("zroot\t-\t/zroot\nzroot/j/web2-data\tzroot/j/web1-data@a\t/usr/jails/jails-data/web2-data\nzroot/v/dsk\tzroot/v/x@s\t-\n")
+	if len(c) != 2 || c[0].Mountpoint != "/usr/jails/jails-data/web2-data" || c[1].Mountpoint != "" {
+		t.Fatalf("%+v", c)
+	}
+}
