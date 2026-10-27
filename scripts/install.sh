@@ -27,7 +27,10 @@ if [ -f "${here}/../go.mod" ]; then
 	# Source checkout: always rebuild, so 'git pull' + install never reuses an old binary.
 	say "building cbsd-web from source"
 	command -v go >/dev/null 2>&1 || pkg install -y go
-	(cd "${here}/.." && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o cbsd-web ./cmd/cbsd-web) || die "build failed"
+	rev=$(cd "${here}/.." && git rev-parse --short HEAD 2>/dev/null || true)
+	ldver=""
+	[ -n "$rev" ] && ldver="-X main.version=0.2.0-${rev}"
+	(cd "${here}/.." && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w ${ldver}" -o cbsd-web ./cmd/cbsd-web) || die "build failed"
 	src="${here}/../cbsd-web"
 else
 	for c in "${here}/cbsd-web" "${here}/../cbsd-web" "${here}/../bin/cbsd-web-freebsd-$(uname -m)"; do
