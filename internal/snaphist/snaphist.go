@@ -75,14 +75,21 @@ func (s *Store) Add(env string, e Event) error {
 	return s.save()
 }
 
-// Remove forgets the events of env recorded at the given time, or all of
-// them when at is zero. It reports how many were removed.
-func (s *Store) Remove(env string, at time.Time) (int, error) {
+// Remove forgets the events of env recorded at the given times, or all of
+// them when no time is given. It reports how many were removed.
+func (s *Store) Remove(env string, at ...time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var keep []Event
 	for _, e := range s.data[env] {
-		if !at.IsZero() && !e.At.Equal(at) {
+		drop := len(at) == 0
+		for _, t := range at {
+			if e.At.Equal(t) {
+				drop = true
+				break
+			}
+		}
+		if !drop {
 			keep = append(keep, e)
 		}
 	}

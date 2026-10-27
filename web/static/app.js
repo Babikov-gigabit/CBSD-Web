@@ -1016,23 +1016,61 @@ function snapshotCard(e) {
           h('dt', null, 'Снимок ZFS'), h('dd', null, h('code', { class: 'mono' }, loc.dataset + '@' + s.name), ' ', copyBtn(loc.dataset + '@' + s.name))));
     };
     // Recorded rollbacks are only the web UI's notes: forgetting them changes nothing in ZFS.
-    const forget = (ev) => {
-      const one = !!ev;
-      modal(one ? 'Убрать со схемы' : 'Очистить историю откатов', h('p', null, one
-        ? ['Линия отката к ', h('b', null, ev.to), ' и удалённые при нём снимки исчезнут со схемы. Сами снимки уже удалены, на данные это не влияет.']
-        : 'Все линии прошлых откатов и удалённых снимков исчезнут со схемы ' + e.jname + '. На данные и существующие снимки это не влияет.'), [
-        { text: 'Отмена' },
-        { text: 'Убрать', class: 'danger', onClick: async () => {
-          try { await api('DELETE', url + '/history' + (one ? '?at=' + encodeURIComponent(ev.at) : '')); load(); } catch (err) { fail(err); }
-        } },
-      ]);
+    const removeEvents = async (ats) => {
+      const q = ats.map((a) => 'at=' + encodeURIComponent(a)).join('&');
+      await api('DELETE', url + '/history' + (q ? '?' + q : ''));
+      load();
     };
-    const shown = (g.history || []).filter(graphHistoryShown);
+    const when = (at) => new Date(at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const forget = (ev) => modal('Убрать со схемы', h('p', null, 'Линия отката к ', h('b', null, ev.to), ' (' + when(ev.at) + ') и удалённые при нём снимки исчезнут со схемы. Сами снимки уже удалены, на данные это не влияет.'), [
+      { text: 'Отмена' },
+      { text: 'Убрать', class: 'danger', onClick: async () => { try { await removeEvents([ev.at]); } catch (err) { fail(err); } } },
+    ]);
+    const events = (g.history || []).slice().reverse(); // newest first
+    const manage = () => {
+      const boxes = [];
+      const rows = events.map((ev) => {
+        const box = h('input', { type: 'checkbox', 'aria-label': 'Выбрать' });
+        box.value = ev.at;
+        boxes.push(box);
+        const lost = (ev.lost || []).map((l) => l.name);
+        return h('tr', { onclick: (x) => { if (x.target !== box) box.checked = !box.checked; sync(); } },
+          h('td', null, box),
+          h('td', { class: 'nowrap' }, when(ev.at)),
+          h('td', null, ev.type === 'try' ? 'открыт отдельно: ' : '↺ откат к ', h('b', { class: 'mono' }, ev.to)),
+          h('td', { class: 'small' }, lost.length ? h('span', { class: 'mono' }, lost.join(', ')) : h('span', { class: 'muted' }, '—')),
+          h('td', { class: 'small' }, ev.branch ? h('span', { class: 'mono' }, ev.branch) : h('span', { class: 'muted' }, '—')),
+          h('td', { class: 'small' }, ev.user));
+      });
+      const all = h('input', { type: 'checkbox', 'aria-label': 'Выбрать все' });
+      const counter = h('span', { class: 'muted small' }, '');
+      const sync = () => {
+        const n = boxes.filter((b) => b.checked).length;
+        all.checked = n === boxes.length && n > 0;
+        all.indeterminate = n > 0 && n < boxes.length;
+        counter.textContent = n ? 'выбрано: ' + n : '';
+      };
+      all.addEventListener('change', () => { for (const b of boxes) b.checked = all.checked; sync(); });
+      for (const b of boxes) b.addEventListener('change', sync);
+      modal('Управление откатами — ' + e.jname, h('div', null,
+        h('p', { class: 'muted small' }, 'Отметьте записи, которые не нужно показывать на схеме. Удаляется только запись в журнале веб-интерфейса: снимки и данные это не затрагивает.'),
+        h('div', { class: 'table-wrap' }, h('table', { class: 'pick' },
+          h('thead', null, h('tr', null, h('th', null, all), h('th', null, 'Когда'), h('th', null, 'Действие'), h('th', null, 'Удалённые снимки'), h('th', null, 'Сохранено как'), h('th', null, 'Кто'))),
+          h('tbody', null, rows))),
+        h('div', { class: 'mt' }, counter)), [
+        { text: 'Закрыть' },
+        { text: 'Удалить выбранные', class: 'danger', onClick: async () => {
+          const ats = boxes.filter((b) => b.checked).map((b) => b.value);
+          if (!ats.length) { toast('Ничего не выбрано', 'err'); return false; }
+          try { await removeEvents(ats); toast('Убрано записей: ' + ats.length); } catch (err) { fail(err); return false; }
+        } },
+      ], { wide: true });
+    };
     const svg = snapshotGraphSVG(g, select, can('operator') ? forget : null);
     return [g.error ? h('div', { class: 'banner warn' }, g.error) : null,
       h('div', { class: 'graph-wrap' }, svg),
       h('div', { class: 'row' }, graphLegend(), h('span', { style: 'flex:1' }),
-        shown.length && can('operator') ? h('button', { class: 'sm', type: 'button', title: 'Убрать со схемы линии прошлых откатов', onclick: () => forget(null) }, 'Очистить историю откатов') : null),
+        events.length && can('operator') ? h('button', { class: 'sm', type: 'button', title: 'Выбрать, какие прошлые откаты показывать на схеме', onclick: manage }, 'Управление откатами (' + events.length + ')') : null),
       details];
   };
 

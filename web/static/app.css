@@ -246,3 +246,5 @@ code.mono { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; wo
 .lg-branch { background: var(--info-bg); border: 2px solid var(--info); }
 .lg-ghost { border: 2px dashed var(--muted); }
 .snap-detail { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }
+.pick tbody tr { cursor: pointer; }
+.nowrap { white-space: nowrap; }

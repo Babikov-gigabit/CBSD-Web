@@ -217,35 +217,39 @@ func (s *Server) trySnapshot(w http.ResponseWriter, r *http.Request, e *cbsd.Env
 	})
 }
 
-// handleSnapshotHistoryDelete hides recorded rollbacks from the graph: one
-// event (?at=<its time>) or, without at, the whole history of the
-// environment. Only the web UI's records change; ZFS is not touched.
+// handleSnapshotHistoryDelete hides recorded rollbacks from the graph: the
+// events named by ?at=<time> (repeatable) or, without at, the whole history
+// of the environment. Only the web UI's records change; ZFS is not touched.
 func (s *Server) handleSnapshotHistoryDelete(w http.ResponseWriter, r *http.Request) {
 	e := s.loadEnv(w, r)
 	if e == nil {
 		return
 	}
-	var at time.Time
-	if v := r.URL.Query().Get("at"); v != "" {
+	var at []time.Time
+	for _, v := range r.URL.Query()["at"] {
 		t, err := time.Parse(time.RFC3339Nano, v)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, "некорректное время события")
 			return
 		}
-		at = t
+		at = append(at, t)
 	}
-	n, err := s.hist.Remove(e.Name, at)
+	if len(at) > 100 {
+		writeErr(w, http.StatusBadRequest, "слишком много событий")
+		return
+	}
+	n, err := s.hist.Remove(e.Name, at...)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if n == 0 && len(at) > 0 {
+		writeErr(w, http.StatusNotFound, "событие не найдено")
 		return
 	}
 	if n > 0 {
 		rc := sessionFrom(r)
 		s.audit.Log(audit.Entry{User: rc.sess.User, IP: rc.ip, Event: "snapshot.history.delete", Target: e.Name, Result: fmt.Sprint(n)})
-	}
-	if n == 0 && !at.IsZero() {
-		writeErr(w, http.StatusNotFound, "событие не найдено")
-		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"removed": n})
 }
