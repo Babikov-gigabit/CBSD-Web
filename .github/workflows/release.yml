@@ -1,0 +1,79 @@
+# Publishes a GitHub release for the version in cmd/cbsd-web/main.go when it
+# reaches main and no release with that tag exists yet. Release notes are the
+# version's section of CHANGELOG.md.
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver=$(sed -n 's/^var version = "\(.*\)"/\1/p' cmd/cbsd-web/main.go)
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          if gh release view "v$ver" >/dev/null 2>&1; then
+            echo "release v$ver already exists"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.ver.outputs.exists != 'true'
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        if: steps.ver.outputs.exists != 'true'
+        run: go test ./...
+
+      - name: Build
+        if: steps.ver.outputs.exists != 'true'
+        env:
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            d="cbsd-web-${VER}-freebsd-${arch}"
+            mkdir -p "dist/$d/scripts"
+            CGO_ENABLED=0 GOOS=freebsd GOARCH=$arch go build -trimpath \
+              -ldflags="-s -w -X main.version=${VER}" -o "dist/$d/cbsd-web" ./cmd/cbsd-web
+            cp -r deploy "dist/$d/"
+            cp scripts/install.sh "dist/$d/scripts/"
+            cp README.md CHANGELOG.md LICENSE "dist/$d/"
+            tar -C dist -czf "dist/$d.tar.gz" "$d"
+          done
+          (cd dist && sha256sum *.tar.gz > SHA256SUMS)
+
+      - name: Publish
+        if: steps.ver.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
+          awk -v v="## $VER" 'index($0, v) == 1 {on=1; next} /^## / {on=0} on' CHANGELOG.md > notes.md
+          {
+            echo
+            echo "## Установка"
+            echo
+            echo '```sh'
+            echo "fetch https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VER}/cbsd-web-${VER}-freebsd-amd64.tar.gz"
+            echo "tar xzf cbsd-web-${VER}-freebsd-amd64.tar.gz"
+            echo "cd cbsd-web-${VER}-freebsd-amd64 && sh scripts/install.sh"
+            echo '```'
+            echo
+            echo "Повторный запуск обновляет бинарник, пользователи и настройки сохраняются. После обновления нажмите Ctrl+F5 в браузере."
+          } >> notes.md
+          gh release create "v$VER" --target "$GITHUB_SHA" --title "cbsd-web $VER" --notes-file notes.md \
+            dist/*.tar.gz dist/SHA256SUMS
