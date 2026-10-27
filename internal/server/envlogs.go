@@ -31,8 +31,9 @@ const (
 	logPermissionH = "нет прав на чтение у пользователя cbsdweb (он должен входить в группу cbsd, а файл быть доступен группе)"
 )
 
-// Passwords appear in bhyve and bcreate command lines (VNC password).
-var rePassword = regexp.MustCompile(`(password=)[^,\s"']+`)
+// Passwords appear in bhyve and bcreate command lines and in bstart's
+// "VNC pass: ..." line.
+var rePassword = regexp.MustCompile(`(password=|VNC pass:[ \t]*)[^,\s"']+`)
 
 func redactLog(s string) string { return rePassword.ReplaceAllString(s, "${1}***") }
 

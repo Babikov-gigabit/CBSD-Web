@@ -215,6 +215,9 @@ func TestEnvLogs(t *testing.T) {
 	if strings.Contains(text, "secret123") || !strings.Contains(text, "password=***") {
 		t.Errorf("VNC password not redacted: %s", text)
 	}
+	if got := redactLog("VNC pass: 3iA9VrZre8Uym\nnext"); got != "VNC pass: ***\nnext" {
+		t.Errorf("bstart VNC pass line: %q", got)
+	}
 	if resp, _ := op.do("GET", "/api/envs/..%2Fetc/logs", nil, nil); resp.StatusCode != 400 && resp.StatusCode != 404 {
 		t.Errorf("hostile name: %d", resp.StatusCode)
 	}
