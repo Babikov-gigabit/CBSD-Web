@@ -23,18 +23,17 @@ die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 here=$(cd "$(dirname "$0")" && pwd)
 src=""
-for c in "${here}/cbsd-web" "${here}/../cbsd-web" "${here}/../bin/cbsd-web-freebsd-$(uname -m)"; do
-	[ -f "$c" ] && { src=$c; break; }
-done
-if [ -z "$src" ]; then
-	if [ -f "${here}/../go.mod" ]; then
-		say "building cbsd-web from source"
-		command -v go >/dev/null 2>&1 || pkg install -y go
-		(cd "${here}/.." && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o cbsd-web ./cmd/cbsd-web)
-		src="${here}/../cbsd-web"
-	else
-		die "cbsd-web binary not found next to the installer"
-	fi
+if [ -f "${here}/../go.mod" ]; then
+	# Source checkout: always rebuild, so 'git pull' + install never reuses an old binary.
+	say "building cbsd-web from source"
+	command -v go >/dev/null 2>&1 || pkg install -y go
+	(cd "${here}/.." && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o cbsd-web ./cmd/cbsd-web) || die "build failed"
+	src="${here}/../cbsd-web"
+else
+	for c in "${here}/cbsd-web" "${here}/../cbsd-web" "${here}/../bin/cbsd-web-freebsd-$(uname -m)"; do
+		[ -f "$c" ] && { src=$c; break; }
+	done
+	[ -n "$src" ] || die "cbsd-web binary not found next to the installer"
 fi
 
 say "installing packages: cbsd sudo"
