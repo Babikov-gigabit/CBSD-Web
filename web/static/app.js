@@ -680,6 +680,12 @@ async function jailLimitsTab(e) {
 }
 
 // ---------- VNC console ----------
+function vncMissing(off, auto) {
+  if (off) return 'VNC отключён (порт 1). Задайте порт 0 (автоматически) или конкретный порт на вкладке «Конфигурация».';
+  if (auto) return 'Порт VNC выбирается автоматически при запуске машины. Запустите её, и порт появится здесь.';
+  return 'VNC для этой машины не назначен.';
+}
+
 async function pageVNC(name) {
   const main = $('#main');
   const enc = encodeURIComponent(name);
@@ -687,7 +693,7 @@ async function pageVNC(name) {
   const info = await api('GET', '/api/envs/' + enc + '/vnc');
   if (!info.console || !info.port || !info.running) {
     const why = !info.console ? 'Консоль доступна администратору (параметр terminal_role в конфиге).'
-      : !info.port ? 'VNC для этой машины не назначен.' : 'Машина не запущена.';
+      : !info.port ? vncMissing(info.off, info.auto) : 'Машина не запущена.';
     return fill(main, pageHead('Консоль: ' + name, backBtn), h('div', { class: 'banner warn' }, why));
   }
   const { default: RFB } = await import('/vendor/novnc/core/rfb.js');
@@ -892,7 +898,7 @@ function copyBtn(text) {
 
 function vncCard(e, keep) {
   const enc = encodeURIComponent(e.jname);
-  if (!e.vnc_port) return h('div', { class: 'card' }, h('h2', null, 'Консоль VNC'), h('p', { class: 'muted' }, 'VNC для этой машины не назначен.'));
+  if (!e.vnc_port) return h('div', { class: 'card' }, h('h2', null, 'Консоль VNC'), h('p', { class: 'muted' }, vncMissing(e.vnc_off, e.vnc_auto)));
   const bind = e.vnc_bind || '127.0.0.1';
   const local = bind === '127.0.0.1' || bind === 'localhost' || bind === '::1';
   const addr = (bind === '0.0.0.0' || bind === '::' ? location.hostname : bind) + ':' + e.vnc_port;

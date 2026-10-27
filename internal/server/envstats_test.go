@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -145,3 +146,22 @@ func TestVNC(t *testing.T) {
 }
 
 func toJSON(v any) string { b, _ := json.Marshal(v); return string(b) }
+
+func TestVNCAutoPort(t *testing.T) {
+	_, newClient := setup(t)
+	oper := newClient("oper")
+	if _, m := oper.do("GET", "/api/envs/vm_debian/vnc", nil, nil); m["auto"] != true || m["port"] != float64(0) {
+		t.Errorf("before start: %v", m)
+	}
+	dir := filepath.Join(testWorkdir, "jails-system", "vm_debian")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// bstart records the port it picked for vm_vnc_port=0.
+	if err := os.WriteFile(filepath.Join(dir, "vnc_port"), []byte("5901\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, m := oper.do("GET", "/api/envs/vm_debian/vnc", nil, nil); m["auto"] != true || m["port"] != float64(5901) {
+		t.Errorf("after start: %v", m)
+	}
+}
