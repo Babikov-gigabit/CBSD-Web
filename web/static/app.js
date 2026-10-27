@@ -898,8 +898,9 @@ function snapshotCard(e) {
   let order = []; // snapshot names, oldest first, from the last load
   const after = async (p) => { try { await p; card.dirty = true; } catch (err) { fail(err); } };
   const snapOp = (mode, snap) => {
-    const titles = { create: 'Создать снимок', rollback: 'Откатить к снимку', destroy: 'Удалить снимок', destroyall: 'Удалить все снимки' };
-    let nameIn = null, saveBox = null, saveName = null;
+    const titles = { create: 'Создать снимок', rollback: 'Откатить к снимку', destroy: 'Удалить снимок', destroyall: 'Удалить все снимки', try: 'Открыть снимок отдельной клеткой' };
+    let nameIn = null, saveBox = null, saveName = null, newIn = null, keepBox = null, keepIn = null, startBox = null;
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[-T:]/g, '');
     const parts = [];
     if (mode === 'create') {
       nameIn = h('input', { placeholder: 'необязательно: имя снимка (латиница, цифры, _.-)', autocomplete: 'off' });
@@ -912,12 +913,26 @@ function snapshotCard(e) {
         e.status === 1 ? 'Окружение запущено: на время отката оно будет остановлено и затем запущено снова.' : ''));
       if (e.emulator === 'jail') {
         saveName = h('input', { value: e.jname + '_' + new Date().toISOString().slice(0, 10).replace(/-/g, ''), autocomplete: 'off', spellcheck: 'false' });
-        saveBox = h('input', { type: 'checkbox', id: 'save_branch', checked: true });
+        saveBox = h('input', { type: 'checkbox', id: 'save_branch' });
         parts.push(h('div', { class: 'field check' }, saveBox, h('label', { for: 'save_branch' }, 'Сохранить текущее состояние как ветку (новая клетка)')),
           h('div', { class: 'field' }, h('label', null, 'Имя клетки для ветки'), saveName,
             h('div', { class: 'help' }, 'Копия делается через rsync до отката, поэтому не зависит от удаляемых снимков. Появится на схеме как ветка.')));
+        saveName.disabled = true;
         saveBox.addEventListener('change', () => { saveName.disabled = !saveBox.checked; });
+        parts.push(h('p', { class: 'muted small' }, 'Хотите вернуться к снимку, не теряя текущее состояние? Закройте это окно и нажмите «Открыть отдельно»: снимок запустится рядом как клон ZFS, а эта клетка и все её снимки останутся как есть.'));
       }
+    } else if (mode === 'try') {
+      newIn = h('input', { value: e.jname + '_' + snap.replace(/[^A-Za-z0-9_]/g, '_'), autocomplete: 'off', spellcheck: 'false' });
+      keepIn = h('input', { value: 'before_' + stamp, autocomplete: 'off', spellcheck: 'false' });
+      keepBox = h('input', { type: 'checkbox', id: 'keep_snap', checked: true });
+      startBox = h('input', { type: 'checkbox', id: 'try_start', checked: true });
+      keepBox.addEventListener('change', () => { keepIn.disabled = !keepBox.checked; });
+      parts.push(h('p', null, 'Состояние снимка ', h('b', null, snap), ' откроется как новая клетка. Это клон ZFS: создаётся мгновенно и почти не занимает места, пока в нём ничего не меняли.'),
+        h('p', { class: 'muted small' }, e.jname + ' продолжит работать как сейчас, все её снимки сохранятся. Чтобы вернуться к текущему состоянию, просто удалите новую клетку. Пока она существует, откатить ' + e.jname + ' к снимку старше ' + snap + ' не получится: ZFS не удаляет снимок, от которого есть клон.'),
+        h('div', { class: 'field' }, h('label', null, 'Имя новой клетки'), newIn),
+        h('div', { class: 'field check' }, keepBox, h('label', { for: 'keep_snap' }, 'Сначала сделать снимок текущего состояния ' + e.jname)),
+        h('div', { class: 'field' }, keepIn, h('div', { class: 'help' }, 'Отметка «до проверки» на схеме: к ней можно будет откатиться или открыть её так же.')),
+        h('div', { class: 'field check' }, startBox, h('label', { for: 'try_start' }, 'Запустить новую клетку сразу')));
     } else if (mode === 'destroy') {
       parts.push(h('p', null, 'Снимок ', h('b', null, snap), ' будет удалён без возможности восстановления.'));
     } else {
@@ -925,11 +940,18 @@ function snapshotCard(e) {
     }
     modal(titles[mode] + ' — ' + e.jname, h('div', null, parts), [
       { text: 'Отмена' },
-      { text: titles[mode], class: mode === 'create' ? 'primary' : 'danger', onClick: async () => {
+      { text: mode === 'try' ? 'Открыть' : titles[mode], class: mode === 'create' || mode === 'try' ? 'primary' : 'danger', onClick: async () => {
         const req = { mode, snapname: mode === 'create' ? nameIn.value.trim() : snap || '' };
         if (saveBox && saveBox.checked) req.save_as = saveName.value.trim();
+        if (mode === 'try') {
+          req.new = newIn.value.trim();
+          req.start = startBox.checked;
+          if (keepBox.checked) req.keep = keepIn.value.trim();
+        }
         try { await runAction('POST', url, req); card.dirty = true; } catch (err) {
           if (err.field === 'save_as' && saveName) { saveName.focus(); toast(err.message, 'err'); return false; }
+          const inField = { new: newIn, keep: keepIn }[err.field];
+          if (inField) { inField.focus(); toast(err.message, 'err'); return false; }
           fail(err);
         }
       } },
@@ -944,6 +966,7 @@ function snapshotCard(e) {
       ? 'Каталог доступен только для чтения: из него можно скопировать отдельные файлы, не откатывая всю клетку (например, cp ' + s.path + '/etc/rc.conf /tmp/).'
       : 'Снимок диска ВМ; файлы внутри доступны после клонирования или отката.')));
   const actions = (name) => [
+    can('admin') && e.emulator === 'jail' ? h('button', { class: 'sm', type: 'button', title: 'Запустить снимок рядом как новую клетку, не трогая текущую', onclick: () => snapOp('try', name) }, 'Открыть отдельно') : null,
     can('admin') ? h('button', { class: 'sm', type: 'button', onclick: () => snapOp('rollback', name) }, 'Откатить') : null,
     can('admin') ? h('button', { class: 'sm danger', type: 'button', onclick: () => snapOp('destroy', name) }, 'Удалить') : null];
 

@@ -165,3 +165,45 @@ func (s *Server) rollback(w http.ResponseWriter, r *http.Request, e *cbsd.Env, s
 		}
 	})
 }
+
+// trySnapshot creates a new jail from an older snapshot via 'jcreate
+// zfs_snapsrc=' (a ZFS clone: instant, no copy). Unlike a rollback the source
+// jail keeps its current data and every snapshot, so returning to the current
+// state means simply using the source jail again.
+func (s *Server) trySnapshot(w http.ResponseWriter, r *http.Request, e *cbsd.Env, req snapReq) {
+	if !cbsd.ValidSnapName(req.SnapName) {
+		writeFieldErr(w, &cbsd.FieldError{Field: "snapname", Msg: "некорректное имя снимка"})
+		return
+	}
+	if ex, _ := s.db.Env(r.Context(), req.New); ex != nil {
+		writeFieldErr(w, &cbsd.FieldError{Field: "new", Msg: "имя уже занято"})
+		return
+	}
+	ds, _ := s.envDataset(r.Context(), e.Name)
+	if ds == "" {
+		writeFieldErr(w, &cbsd.FieldError{Field: "snapname", Msg: "не найден набор данных ZFS клетки"})
+		return
+	}
+	create, err := cbsd.FromSnapshotArgs(e, req.New, ds+"@"+req.SnapName, req.Start)
+	if err != nil {
+		writeFieldErr(w, err)
+		return
+	}
+	steps := [][]string{}
+	if req.Keep != "" {
+		keep, err := cbsd.SnapshotArgs(e.Emulator, "create", e.Name, req.Keep)
+		if err != nil {
+			writeFieldErr(w, &cbsd.FieldError{Field: "keep", Msg: "латиница, цифры, _.-"})
+			return
+		}
+		steps = append(steps, keep)
+	}
+	steps = append(steps, create)
+	user := sessionFrom(r).sess.User
+	title := "Снимок " + e.Name + "@" + req.SnapName + " → клетка " + req.New
+	s.submitSteps(w, r, title, e.Name, steps, nil, func(err error) {
+		if err == nil {
+			s.hist.Add(e.Name, snaphist.Event{Type: "try", At: time.Now(), User: user, To: req.SnapName, Branch: req.New, Kept: req.Keep})
+		}
+	})
+}

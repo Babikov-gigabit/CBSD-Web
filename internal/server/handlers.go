@@ -420,6 +420,11 @@ type snapReq struct {
 	Mode     string `json:"mode"`
 	SnapName string `json:"snapname"`
 	SaveAs   string `json:"save_as,omitempty"` // rollback: keep the current state as this new jail
+	// try: run the snapshot as a separate jail New (ZFS clone), optionally
+	// snapshotting the current state as Keep first; Start boots it.
+	New   string `json:"new,omitempty"`
+	Keep  string `json:"keep,omitempty"`
+	Start bool   `json:"start,omitempty"`
 }
 
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -438,6 +443,10 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Mode == "rollback" {
 		s.rollback(w, r, e, req.SnapName, req.SaveAs)
+		return
+	}
+	if req.Mode == "try" {
+		s.trySnapshot(w, r, e, req)
 		return
 	}
 	if req.Mode == "destroyall" {

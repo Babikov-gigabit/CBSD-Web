@@ -21,12 +21,13 @@ type Lost struct {
 
 // Event is one rollback, optionally with the pre-rollback state saved as Branch.
 type Event struct {
-	Type   string    `json:"type"` // "rollback"
+	Type   string    `json:"type"` // "rollback" or "try" (snapshot opened as a separate jail)
 	At     time.Time `json:"at"`
 	User   string    `json:"user"`
 	To     string    `json:"to"`               // snapshot rolled back to
 	Lost   []Lost    `json:"lost,omitempty"`   // newer snapshots destroyed by zfs rollback -r
 	Branch string    `json:"branch,omitempty"` // environment holding the saved state
+	Kept   string    `json:"kept,omitempty"`   // try: snapshot of the state before
 }
 
 const maxPerEnv = 100

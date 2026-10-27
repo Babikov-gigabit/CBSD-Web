@@ -168,6 +168,49 @@ func CloneArgs(emulator, from, to, hostname string) ([]string, error) {
 	return nil, errors.New("clone is supported for jails and bhyve VMs")
 }
 
+var reZSnap = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,200}@[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$`)
+
+// FromSnapshotArgs builds 'jcreate' arguments for a new jail whose data is a
+// ZFS clone of src (dataset@snapshot): created instantly without copying and
+// without touching the source jail or its snapshots. Base settings follow the
+// source jail so the clone boots the same way.
+func FromSnapshotArgs(e *Env, to, src string, start bool) ([]string, error) {
+	if e.Emulator != "jail" {
+		return nil, ferr("new", "запуск снимка отдельно доступен только для клеток")
+	}
+	if !ValidNewName(to) {
+		return nil, ferr("new", "латиница, цифры и _, начинается с буквы")
+	}
+	if !reZSnap.MatchString(src) || strings.Contains(src, "..") {
+		return nil, ferr("snapname", "некорректный снимок ZFS")
+	}
+	ver := e.Ver
+	if !reVer.MatchString(ver) {
+		ver = "native"
+	}
+	args := []string{"jcreate", "jname=" + to, "zfs_snapsrc=" + src, "ver=" + ver,
+		"host_hostname=" + strings.ReplaceAll(to, "_", "-"), "ip4_addr=DHCP",
+		"pkg_bootstrap=0", "etcupdate_init=0"}
+	if reArch.MatchString(e.Arch) {
+		args = append(args, "arch="+e.Arch)
+	}
+	if e.BaseRW {
+		args = append(args, "baserw=1")
+	} else {
+		args = append(args, "baserw=0")
+	}
+	if e.VNet {
+		args = append(args, "vnet=1")
+		if e.Interface != "" && reIface.MatchString(e.Interface) {
+			args = append(args, "interface="+e.Interface)
+		}
+	}
+	if start {
+		args = append(args, "runasap=1")
+	}
+	return args, nil
+}
+
 // Snapshot is one CBSD snapshot as listed by 'jsnapshot mode=list'.
 type Snapshot struct {
 	Name    string `json:"name"`    // CBSD snapname (the part after @)

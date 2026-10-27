@@ -86,3 +86,49 @@ func TestCloneRunningJail(t *testing.T) {
 		t.Fatalf("failed clone must restart: %v %q", res["job"], out)
 	}
 }
+
+func TestOpenSnapshotAsJail(t *testing.T) {
+	_, newClient := setup(t)
+	useFakeTools(t)
+	view, admin := newClient("view"), newClient("admin")
+
+	req := map[string]any{"mode": "try", "snapname": "web20251001093000", "new": "web1_try", "keep": "before_try", "start": true}
+	if resp, m := view.do("POST", "/api/envs/web1/snapshots", req, nil); resp.StatusCode != 403 {
+		t.Errorf("viewer: %d %v", resp.StatusCode, m)
+	}
+	for field, bad := range map[string]map[string]any{
+		"new":      {"mode": "try", "snapname": "web20251001093000", "new": "db1"},
+		"keep":     {"mode": "try", "snapname": "web20251001093000", "new": "web1_t2", "keep": "a b"},
+		"snapname": {"mode": "try", "snapname": "x;id", "new": "web1_t3"},
+	} {
+		if resp, m := admin.do("POST", "/api/envs/web1/snapshots", bad, nil); resp.StatusCode != 422 || m["field"] != field {
+			t.Errorf("%s: %d %v", field, resp.StatusCode, m)
+		}
+	}
+	resp, m := admin.do("POST", "/api/envs/web1/snapshots", req, nil)
+	if resp.StatusCode != 202 {
+		t.Fatalf("try: %d %v", resp.StatusCode, m)
+	}
+	out := jobOutput(t, admin, m)
+	// The source jail is neither stopped nor rolled back.
+	if strings.Contains(out, "jstop") || strings.Contains(out, "rollback") {
+		t.Errorf("source touched: %q", out)
+	}
+	last := -1
+	for _, want := range []string{"jsnapshot mode=create jname=web1 snapname=before_try",
+		"jcreate jname=web1_try zfs_snapsrc=zroot/jails/web1@web20251001093000 ver=", "runasap=1"} {
+		i := strings.Index(out, want)
+		if i <= last {
+			t.Fatalf("step %q missing or out of order: %q", want, out)
+		}
+		last = i
+	}
+	_, g := view.do("GET", "/api/envs/web1/snapshots/graph", nil, nil)
+	hist := g["history"].([]any)
+	if len(hist) != 1 {
+		t.Fatalf("history: %v", hist)
+	}
+	if ev := hist[0].(map[string]any); ev["type"] != "try" || ev["branch"] != "web1_try" || ev["kept"] != "before_try" {
+		t.Errorf("event: %v", ev)
+	}
+}
