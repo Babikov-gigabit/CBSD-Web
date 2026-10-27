@@ -34,6 +34,7 @@ type Server struct {
 	jobs     *jobs.Manager
 	sys      *sysinfo.Collector
 	static   *staticFS
+	terms    terminals
 	version  string
 }
 
@@ -85,6 +86,11 @@ func (s *Server) Handler() http.Handler {
 	s.route(mux, "GET /api/envs/{name}", v, s.handleEnv)
 	s.route(mux, "POST /api/envs/{name}/action", o, s.handleEnvAction)
 	s.route(mux, "PATCH /api/envs/{name}", o, s.handleEnvUpdate)
+	s.route(mux, "GET /api/envs/{name}/config", v, s.handleJailConfig)
+	s.route(mux, "PATCH /api/envs/{name}/config", o, s.handleJailConfigSet)
+	s.route(mux, "GET /api/envs/{name}/limits", v, s.handleJailLimits)
+	s.route(mux, "PUT /api/envs/{name}/limits", o, s.handleJailLimitsSet)
+	s.route(mux, "GET /api/envs/{name}/terminal", v, s.handleTerminal)
 	s.route(mux, "GET /api/envs/{name}/snapshots", v, s.handleSnapshotList)
 	s.route(mux, "POST /api/envs/{name}/snapshots", o, s.handleSnapshot)
 	s.route(mux, "POST /api/envs/{name}/clone", o, s.handleClone)
@@ -226,7 +232,9 @@ func (s *Server) clientFilter(next http.Handler) http.Handler {
 func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+		// style-src allows inline styles because xterm.js injects <style> for the
+		// terminal; scripts stay strictly 'self'.
+		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")

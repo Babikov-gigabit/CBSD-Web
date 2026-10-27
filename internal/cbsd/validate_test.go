@@ -147,3 +147,70 @@ func TestStripANSI(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestJailConfigUpdate(t *testing.T) {
+	ok := JailConfigUpdate{Values: map[string]string{"allow_raw_sockets": "1", "devfs_ruleset": "4", "sysvshm": "new", "cpuset": "0-3", "jnameserver": "8.8.8.8,1.1.1.1"}}
+	args, err := ok.Args("web1", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "jset jname=web1 jnameserver=8.8.8.8,1.1.1.1 allow_raw_sockets=1 devfs_ruleset=4 sysvshm=new cpuset=0-3"
+	if got := strings.Join(args, " "); got != want {
+		t.Fatalf("args:\n got %s\nwant %s", got, want)
+	}
+	bad := []map[string]string{
+		{"host_hostname": "a;reboot"},
+		{"jnameserver": "8.8.8.8 $(id)"},
+		{"allow_mount": "yes"},
+		{"devfs_ruleset": "04"},
+		{"devfs_ruleset": "70000"},
+		{"sysvsem": "new;"},
+		{"cpuset": "0-3'"},
+		{"tags": "a b"},
+		{"nosuch": "1"},
+		{"path": "/"},
+	}
+	for _, v := range bad {
+		u := JailConfigUpdate{Values: v}
+		if _, err := u.Args("web1", true, false); err == nil {
+			t.Errorf("accepted %v", v)
+		}
+	}
+	hookU := JailConfigUpdate{Values: map[string]string{"exec_master_poststart": "/root/bin/up.sh"}}
+	if _, err := hookU.Args("web1", false, false); err == nil {
+		t.Error("non-admin changed a host hook")
+	}
+	if _, err := hookU.Args("web1", true, false); err != nil {
+		t.Errorf("admin hook: %v", err)
+	}
+	for _, h := range []string{"/bin/sh /etc/rc", "/x;id", "`id`", "$(id)", "/a|b", "/a\nb", "/a'b"} {
+		u := JailConfigUpdate{Values: map[string]string{"exec_start": h}}
+		if _, err := u.Args("web1", true, false); err == nil {
+			t.Errorf("accepted hook %q", h)
+		}
+	}
+	// Non-live params on a running jail need an explicit restart.
+	vnet := JailConfigUpdate{Values: map[string]string{"vnet": "1"}}
+	if _, err := vnet.Args("web1", true, true); err == nil {
+		t.Error("vnet on running jail without restart")
+	}
+	vnet.Restart = true
+	if args, err := vnet.Args("web1", true, true); err != nil || args[len(args)-1] != "autorestart=1" {
+		t.Errorf("restart: %v %v", args, err)
+	}
+}
+
+func TestRctlArgs(t *testing.T) {
+	args, err := RctlArgs("web1", map[string]string{"memoryuse": "2g", "pcpu": "50", "nice": "-5", "fsquota": "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(args, " "); got != "jrctl mode=set jname=web1 memoryuse=2g pcpu=50 nice=-5 fsquota=0" {
+		t.Fatalf("got %s", got)
+	}
+	for _, v := range []map[string]string{{"memoryuse": "2gb"}, {"pcpu": "5g"}, {"nice": "30"}, {"maxproc": "1;id"}, {"cputime": "1"}, {"memoryuse": ""}} {
+		if _, err := RctlArgs("web1", v); err == nil {
+			t.Errorf("accepted %v", v)
+		}
+	}
+}

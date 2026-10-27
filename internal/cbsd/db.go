@@ -74,7 +74,16 @@ func (d *DB) conn(name string) (*sql.DB, error) {
 	if c, ok := d.conns[name]; ok {
 		return c, nil
 	}
-	p := d.path(name)
+	c, err := openRO(d.path(name))
+	if err != nil {
+		return nil, err
+	}
+	d.conns[name] = c
+	return c, nil
+}
+
+// openRO opens an existing SQLite file read-only.
+func openRO(p string) (*sql.DB, error) {
 	if _, err := os.Stat(p); err != nil {
 		return nil, err
 	}
@@ -86,7 +95,6 @@ func (d *DB) conn(name string) (*sql.DB, error) {
 	}
 	c.SetMaxOpenConns(4)
 	c.SetConnMaxIdleTime(5 * time.Minute)
-	d.conns[name] = c
 	return c, nil
 }
 

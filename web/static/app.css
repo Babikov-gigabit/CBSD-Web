@@ -106,7 +106,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 button.primary:hover { background: var(--accent-2); }
 button.danger { color: var(--err); border-color: var(--err); }
 button.danger:hover { background: var(--err-bg); }
-button.sm { padding: 3px 9px; font-size: 12.5px; }
+button.sm, .btn.sm { padding: 3px 9px; font-size: 12.5px; }
 button.icon { padding: 4px 8px; }
 .btn-group { display: inline-flex; gap: 4px; }
 input, select, textarea { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; width: 100%; }
@@ -169,3 +169,30 @@ legend { padding: 0 6px; color: var(--muted); font-size: 12.5px; }
   .form { grid-template-columns: 1fr; }
   .search { max-width: none; }
 }
+
+/* jail settings */
+.tabs { overflow-x: auto; }
+.tabs a { white-space: nowrap; padding: 8px 12px; border-bottom: 2px solid transparent; color: var(--text); }
+.tabs a:hover { text-decoration: none; background: var(--panel-2); }
+.tabs a.active { border-bottom-color: var(--accent); font-weight: 600; }
+.pgroups { display: grid; gap: 14px; }
+.pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px 18px; }
+.pfield label { display: block; font-size: 13px; margin-bottom: 4px; }
+.pfield.check { display: flex; gap: 10px; align-items: flex-start; }
+.pfield.check input { margin-top: 3px; }
+.pfield .help { font-size: 11.5px; color: var(--muted); margin-top: 3px; word-break: break-word; }
+.pfield .mark { font-size: 11px; color: var(--muted); cursor: help; }
+.pfield.changed label { color: var(--info); font-weight: 600; }
+.pfield.invalid input, .pfield.invalid select { border-color: var(--err); }
+.pfield .err { color: var(--err); font-size: 12px; margin-top: 3px; }
+tr.changed td:first-child { box-shadow: inset 3px 0 var(--info); }
+td.limit-in { width: 180px; }
+td.limit-in input { padding: 4px 8px; }
+input.bad { border-color: var(--err); }
+.savebar label.attn { color: var(--err); font-weight: 600; }
+.savebar { position: sticky; bottom: 0; z-index: 5; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 14px;
+  padding: 10px 14px; background: var(--panel); border: 1px solid var(--info); border-radius: var(--radius); box-shadow: 0 -4px 14px rgba(0,0,0,.12); }
+
+/* terminal */
+.term-box { background: #0d1117; border-radius: var(--radius); padding: 8px; height: calc(100vh - 150px); min-height: 300px; overflow: hidden; }
+.term-box .xterm { height: 100%; }

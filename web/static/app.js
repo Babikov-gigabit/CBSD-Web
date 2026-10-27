@@ -2,7 +2,7 @@
 // CBSD Web UI. No framework, no build step. All DOM is created with
 // textContent (never innerHTML with data) so server data cannot inject markup.
 
-const state = { user: null, role: null, csrf: null, version: '', timer: null, route: '' };
+const state = { user: null, role: null, csrf: null, version: '', terminal: false, timer: null, route: '', cleanup: null };
 const ROLE_LEVEL = { viewer: 1, operator: 2, admin: 3 };
 const can = (role) => (ROLE_LEVEL[state.role] || 0) >= ROLE_LEVEL[role];
 
@@ -242,7 +242,8 @@ const routes = [
   [/^jails$/, () => pageEnvs('jail'), 'jails'],
   [/^vms$/, () => pageEnvs('bhyve'), 'vms'],
   [/^xen$/, () => pageEnvs('xen'), 'xen'],
-  [/^env\/([A-Za-z0-9_.-]+)$/, (m) => pageEnv(m[1]), null],
+  [/^env\/([A-Za-z0-9_.-]+)(?:\/(config|limits))?$/, (m) => pageEnv(m[1], m[2] || ''), null],
+  [/^env\/([A-Za-z0-9_.-]+)\/terminal$/, (m) => pageTerminal(m[1]), null],
   [/^images$/, pageImages, 'images'],
   [/^bases$/, pageBases, 'bases'],
   [/^nodes$/, pageNodes, 'nodes'],
@@ -297,6 +298,8 @@ function route() {
   const path = location.hash.replace(/^#\/?/, '');
   state.route = path;
   if (state.timer) { clearInterval(state.timer); state.timer = null; }
+  if (state.cleanup) { state.cleanup(); state.cleanup = null; }
+  refreshFn = null;
   for (const a of document.querySelectorAll('.nav a')) a.classList.remove('active');
   for (const [re, fn, key] of routes) {
     const m = path.match(re);
@@ -327,6 +330,7 @@ function pageHead(title, ...right) {
 // ---------- login ----------
 function renderLogin(msg) {
   if (state.timer) clearInterval(state.timer);
+  if (state.cleanup) { state.cleanup(); state.cleanup = null; }
   const app = $('#app');
   app.className = '';
   const user = h('input', { name: 'username', autocomplete: 'username', placeholder: 'Пользователь', required: true });
@@ -338,7 +342,7 @@ function renderLogin(msg) {
     btn.disabled = true; err.textContent = '';
     try {
       const r = await api('POST', '/api/login', { user: user.value, password: pass.value });
-      Object.assign(state, { user: r.user, role: r.role, csrf: r.csrf, version: r.version });
+      Object.assign(state, { user: r.user, role: r.role, csrf: r.csrf, version: r.version, terminal: !!r.terminal });
       clear(app); route();
     } catch (e2) { err.textContent = e2.message; pass.value = ''; pass.focus(); } finally { btn.disabled = false; }
   } }, user, pass, err, btn);
@@ -349,7 +353,7 @@ function renderLogin(msg) {
 }
 async function logout() {
   try { await api('POST', '/api/logout'); } catch (_) { /* ignore */ }
-  Object.assign(state, { user: null, role: null, csrf: null });
+  Object.assign(state, { user: null, role: null, csrf: null, terminal: false });
   renderLogin();
 }
 
@@ -471,48 +475,265 @@ function envButtons(e, busyJob, compact) {
     if (e.emulator === 'jail' || e.emulator === 'bhyve') g.append(h('button', { class: cls, type: 'button', onclick: async () => {
       if (await confirmDialog('Перезапустить ' + e.jname + '?', 'Окружение будет остановлено и запущено снова.', { confirmText: 'Перезапустить' })) act('restart')();
     } }, '↻'));
+    if (e.emulator === 'jail' && state.terminal) g.append(h('a', { class: 'btn ' + cls, href: '#/env/' + encodeURIComponent(e.jname) + '/terminal', title: 'Терминал в клетке' }, compact ? '>_' : '>_ Терминал'));
   }
   return g;
 }
 
-async function pageEnv(name) {
+async function pageEnv(name, tab) {
   const main = $('#main');
+  const enc = encodeURIComponent(name);
   const render = async () => {
-    const { env: e, busy_job: busyJob } = await api('GET', '/api/envs/' + encodeURIComponent(name));
+    const { env: e, busy_job: busyJob } = await api('GET', '/api/envs/' + enc);
     const back = { jail: '#/jails', bhyve: '#/vms', xen: '#/xen' }[e.emulator] || '#/';
-    const info = [
-      ['Тип', EMU_TITLE[e.emulator] || e.emulator], ['IP', e.ip4_addr || '—'], ['Hostname', e.host_hostname || '—'],
-      ['Путь', e.path || '—'], ['Интерфейс', e.interface || '—'], ['Автозапуск', e.astart ? 'да' : 'нет'],
-      ['Защита от удаления', e.protected ? 'да' : 'нет'],
-    ];
-    if (e.emulator === 'jail') info.push(['JID', e.jid ? String(e.jid) : '—'], ['База', e.ver || '—'], ['Режим базы', e.baserw ? 'rw (своя копия)' : 'ro (общая)'], ['VNET', e.vnet ? 'да' : 'нет']);
-    else info.push(['ОС', e.vm_os_type || '—'], ['Профиль', e.vm_os_profile || '—'], ['CPU', String(e.vm_cpus || '—')], ['RAM', fmtBytes(e.vm_ram)],
-      ['VNC', e.vnc_port ? (e.vnc_bind || '127.0.0.1') + ':' + e.vnc_port : 'не назначен']);
+    const isJail = e.emulator === 'jail';
+    if (!isJail) tab = '';
     const tools = [];
     if (can('operator')) {
-      tools.push(h('button', { type: 'button', onclick: () => editEnv(e) }, 'Настройки'));
-      if (e.emulator === 'jail' || e.emulator === 'bhyve') tools.push(h('button', { type: 'button', onclick: () => cloneEnv(e) }, 'Клонировать'));
+      if (!isJail) tools.push(h('button', { type: 'button', onclick: () => editEnv(e) }, 'Настройки'));
+      if (isJail || e.emulator === 'bhyve') tools.push(h('button', { type: 'button', onclick: () => cloneEnv(e) }, 'Клонировать'));
     }
     if (can('admin')) tools.push(h('button', { class: 'danger', type: 'button', disabled: e.protected || !!busyJob, title: e.protected ? 'Защищено (protected=1)' : '', onclick: async () => {
       if (!(await confirmDialog('Удалить ' + e.jname + '?', 'Окружение и все его данные будут удалены без возможности восстановления.', { danger: true, confirmText: 'Удалить навсегда', typeName: e.jname }))) return;
-      try { await runAction('POST', '/api/envs/' + encodeURIComponent(e.jname) + '/action', { action: 'remove' }); location.hash = back; } catch (err) { fail(err); }
+      try { await runAction('POST', '/api/envs/' + enc + '/action', { action: 'remove' }); location.hash = back; } catch (err) { fail(err); }
     } }, 'Удалить'));
-    const content = [
+    const head = [
+      pageHead(e.jname, h('a', { class: 'btn', href: back }, '← К списку')),
       h('div', { class: 'row', style: 'margin-bottom:16px' }, statusPill(e, busyJob), envButtons(e, busyJob, false), h('span', { style: 'flex:1' }), tools),
       e.maintenance ? h('div', { class: 'banner warn' }, 'Режим обслуживания: ', e.maintenance) : null,
-      h('div', { class: 'grid cols-2' },
-        h('div', { class: 'card' }, h('h2', null, 'Параметры'), h('dl', { class: 'kv' }, info.map(([k, v]) => [h('dt', null, k), h('dd', null, v)]))),
-        e.emulator === 'jail' || e.emulator === 'bhyve' ? snapshotCard(e) : null),
     ];
-    if (e.emulator !== 'jail' && e.vnc_port) {
-      content.push(h('div', { class: 'card mt' }, h('h2', null, 'Консоль VNC'),
-        h('p', { class: 'muted' }, 'Подключитесь VNC-клиентом. Если VNC слушает 127.0.0.1, используйте SSH-туннель:'),
-        h('pre', { class: 'mono' }, 'ssh -L 5900:127.0.0.1:' + e.vnc_port + ' <пользователь>@' + location.hostname + '\n# затем откройте VNC на localhost:5900')));
+    if (isJail) {
+      const t = (key, title) => h('a', { href: '#/env/' + enc + (key ? '/' + key : ''), class: tab === key ? 'active' : '' }, title);
+      head.push(h('nav', { class: 'tabs' }, t('', 'Обзор'), t('config', 'Конфигурация'), t('limits', 'Лимиты ресурсов'),
+        state.terminal ? h('a', { href: '#/env/' + enc + '/terminal' }, '>_ Терминал') : null));
     }
-    fill(main, pageHead(e.jname, h('a', { class: 'btn', href: back }, '← К списку')), content);
+    if (tab === 'config') return fill(main, head, await jailConfigTab(e));
+    if (tab === 'limits') return fill(main, head, await jailLimitsTab(e));
+    fill(main, head, envOverview(e));
   };
   await render();
-  autoRefresh(render, 6000);
+  // Only the overview polls: the edit tabs must not reset what the user typed.
+  if (!tab) autoRefresh(render, 6000);
+  else refreshFn = render;
+}
+
+function envOverview(e) {
+  const info = [
+    ['Тип', EMU_TITLE[e.emulator] || e.emulator], ['IP', e.ip4_addr || '—'], ['Hostname', e.host_hostname || '—'],
+    ['Путь', e.path || '—'], ['Интерфейс', e.interface || '—'], ['Автозапуск', e.astart ? 'да' : 'нет'],
+    ['Защита от удаления', e.protected ? 'да' : 'нет'],
+  ];
+  if (e.emulator === 'jail') info.push(['JID', e.jid ? String(e.jid) : '—'], ['База', e.ver || '—'], ['Режим базы', e.baserw ? 'rw (своя копия)' : 'ro (общая)'], ['VNET', e.vnet ? 'да' : 'нет']);
+  else info.push(['ОС', e.vm_os_type || '—'], ['Профиль', e.vm_os_profile || '—'], ['CPU', String(e.vm_cpus || '—')], ['RAM', fmtBytes(e.vm_ram)],
+    ['VNC', e.vnc_port ? (e.vnc_bind || '127.0.0.1') + ':' + e.vnc_port : 'не назначен']);
+  const content = [h('div', { class: 'grid cols-2' },
+    h('div', { class: 'card' }, h('h2', null, 'Параметры'), h('dl', { class: 'kv' }, info.map(([k, v]) => [h('dt', null, k), h('dd', null, v)]))),
+    e.emulator === 'jail' || e.emulator === 'bhyve' ? snapshotCard(e) : null)];
+  if (e.emulator !== 'jail' && e.vnc_port) {
+    content.push(h('div', { class: 'card mt' }, h('h2', null, 'Консоль VNC'),
+      h('p', { class: 'muted' }, 'Подключитесь VNC-клиентом. Если VNC слушает 127.0.0.1, используйте SSH-туннель:'),
+      h('pre', { class: 'mono' }, 'ssh -L 5900:127.0.0.1:' + e.vnc_port + ' <пользователь>@' + location.hostname + '\n# затем откройте VNC на localhost:5900')));
+  }
+  return content;
+}
+
+// Sticky bar with the change counter and save/reset buttons for an edit tab.
+function saveBar(onSave, onReset, extra) {
+  const count = h('span', { class: 'muted' });
+  const save = h('button', { class: 'primary', type: 'button' }, 'Сохранить');
+  const reset = h('button', { type: 'button', onclick: onReset }, 'Сбросить');
+  save.addEventListener('click', async () => { save.disabled = true; try { await onSave(); } finally { save.disabled = false; } });
+  const bar = h('div', { class: 'savebar', hidden: true }, count, extra, h('span', { style: 'flex:1' }), reset, save);
+  return { bar, set(n) { bar.hidden = n === 0; count.textContent = 'Изменено: ' + n; } };
+}
+
+async function jailConfigTab(e) {
+  const url = '/api/envs/' + encodeURIComponent(e.jname) + '/config';
+  const r = await api('GET', url);
+  const orig = r.values || {};
+  // Only parameters this CBSD version has a column for.
+  const params = r.params.filter((p) => p.name in orig);
+  const ctrls = {};
+  const norm = (p, v) => (p.kind === 'bool' ? (v === '1' || v === 'true' ? '1' : '0') : String(v ?? ''));
+  const current = (c) => (c.p.kind === 'bool' ? (c.input.checked ? '1' : '0') : c.input.value.trim());
+  const diff = () => {
+    const out = {};
+    for (const c of Object.values(ctrls)) { const v = current(c); if (v !== norm(c.p, orig[c.p.name])) out[c.p.name] = v; }
+    return out;
+  };
+  const restartBox = h('input', { type: 'checkbox', id: 'cfg_restart' });
+  const restartWrap = h('label', { class: 'row small', for: 'cfg_restart', hidden: true }, restartBox, 'Перезапустить клетку, чтобы применить');
+  const update = () => {
+    const d = diff();
+    for (const c of Object.values(ctrls)) c.wrap.classList.toggle('changed', c.p.name in d);
+    bar.set(Object.keys(d).length);
+    restartWrap.hidden = !(r.running && Object.keys(d).some((k) => !ctrls[k].p.live));
+  };
+  const clearErrors = () => { restartWrap.classList.remove('attn'); for (const c of Object.values(ctrls)) { c.wrap.classList.remove('invalid'); c.wrap.querySelector('.err')?.remove(); } };
+  const bar = saveBar(async () => {
+    clearErrors();
+    const values = diff();
+    try { await runAction('PATCH', url, { values, restart: restartBox.checked }); } catch (err) {
+      const c = ctrls[err.field];
+      if (err.field === 'restart') { restartWrap.classList.add('attn'); restartBox.focus(); }
+      if (c) { c.wrap.classList.add('invalid'); c.wrap.append(h('div', { class: 'err' }, err.message)); c.wrap.scrollIntoView({ block: 'center' }); c.input.focus(); } else fail(err);
+    }
+  }, () => {
+    clearErrors();
+    for (const c of Object.values(ctrls)) {
+      const v = norm(c.p, orig[c.p.name]);
+      if (c.p.kind === 'bool') c.input.checked = v === '1'; else c.input.value = v;
+    }
+    update();
+  }, restartWrap);
+
+  const field = (p) => {
+    const id = 'cfg_' + p.name;
+    const v = norm(p, orig[p.name]);
+    const disabled = !can('operator') || (p.admin && !can('admin'));
+    let input;
+    if (p.kind === 'bool') input = h('input', { type: 'checkbox', id, checked: v === '1', disabled });
+    else if (p.kind === 'enum') {
+      const opts = p.options.includes(v) ? p.options : [v, ...p.options];
+      input = h('select', { id, disabled }, opts.map((o) => h('option', { value: o }, o)));
+      input.value = v;
+    } else input = h('input', { id, type: p.kind === 'int' ? 'number' : 'text', min: p.kind === 'int' ? p.min : null, max: p.kind === 'int' ? p.max : null, value: v, disabled, autocomplete: 'off', spellcheck: 'false' });
+    const marks = [p.live ? null : h('span', { class: 'mark', title: 'На запущенной клетке применяется перезапуском' }, '↻'),
+      p.admin ? h('span', { class: 'mark', title: 'Меняет только администратор' }, '🔒') : null];
+    const label = h('label', { for: id }, p.label, ' ', marks);
+    const meta = h('div', { class: 'help' }, h('span', { class: 'mono' }, p.name), p.help ? ' · ' + p.help : '');
+    const wrap = p.kind === 'bool'
+      ? h('div', { class: 'pfield check' }, input, h('div', null, label, meta))
+      : h('div', { class: 'pfield' }, label, input, meta);
+    ctrls[p.name] = { p, input, wrap, text: (p.name + ' ' + p.label + ' ' + (p.help || '')).toLowerCase() };
+    return wrap;
+  };
+  const cards = r.groups.map((g) => {
+    const ps = params.filter((p) => p.group === g);
+    if (!ps.length) return null;
+    const card = h('section', { class: 'card pgroup' }, h('h2', null, g), h('div', { class: 'pgrid' }, ps.map(field)));
+    card.dataset.group = g;
+    return card;
+  });
+  const search = h('input', { class: 'search', type: 'search', placeholder: 'Поиск параметра…', oninput: () => {
+    const q = search.value.trim().toLowerCase();
+    for (const c of Object.values(ctrls)) c.wrap.hidden = !!q && !c.text.includes(q);
+    for (const card of cards) if (card) card.hidden = ![...card.querySelectorAll('.pfield')].some((w) => !w.hidden);
+  } });
+  const box = h('div', { oninput: update, onchange: update },
+    h('div', { class: 'row', style: 'margin-bottom:12px' }, search,
+      h('span', { class: 'muted small' }, '↻ — на запущенной клетке нужен перезапуск, 🔒 — только администратор. Значения пишутся через cbsd jset.')),
+    r.busy_job ? h('div', { class: 'banner warn' }, 'Сейчас над клеткой выполняется задача; изменения можно будет сохранить после неё.') : null,
+    h('div', { class: 'pgroups' }, cards), bar.bar);
+  return box;
+}
+
+async function jailLimitsTab(e) {
+  const url = '/api/envs/' + encodeURIComponent(e.jname) + '/limits';
+  const r = await api('GET', url);
+  const orig = r.values || {};
+  const usage = r.usage || {};
+  const inputs = {};
+  const origOf = (n) => (orig[n] && orig[n] !== '0' ? orig[n] : '');
+  const diff = () => {
+    const out = {};
+    for (const [n, inp] of Object.entries(inputs)) { const v = inp.value.trim(); if (v !== origOf(n)) out[n] = v === '' ? '0' : v; }
+    return out;
+  };
+  const update = () => {
+    const d = diff();
+    for (const [n, inp] of Object.entries(inputs)) inp.closest('tr').classList.toggle('changed', n in d);
+    bar.set(Object.keys(d).length);
+  };
+  const bar = saveBar(async () => {
+    for (const inp of Object.values(inputs)) inp.classList.remove('bad');
+    try { await runAction('PUT', url, { values: diff() }); } catch (err) {
+      if (inputs[err.field]) { inputs[err.field].classList.add('bad'); inputs[err.field].focus(); }
+      fail(err);
+    }
+  }, () => { for (const [n, inp] of Object.entries(inputs)) inp.value = origOf(n); update(); });
+  const rows = r.params.map((p) => {
+    const inp = h('input', { value: origOf(p.name), placeholder: 'нет', disabled: !can('operator'), autocomplete: 'off', spellcheck: 'false', 'aria-label': p.label });
+    inputs[p.name] = inp;
+    return h('tr', null, h('td', null, h('div', null, p.label), h('div', { class: 'muted small mono' }, p.name)),
+      h('td', { class: 'limit-in' }, inp), r.running ? h('td', { class: 'mono' }, usage[p.name] || '—') : null,
+      h('td', { class: 'wrap muted small' }, p.help || (p.size ? 'Можно с суффиксом k, m, g, t.' : '')));
+  });
+  return h('div', { oninput: update },
+    h('div', { class: 'banner info' }, 'Ограничения rctl применяются через cbsd jrctl. Пустое значение или 0 снимает лимит. ',
+      'Нужен kern.racct.enable=1 в /boot/loader.conf (включается перезагрузкой хоста).'),
+    r.values_error ? h('div', { class: 'banner warn' }, r.values_error, '. Можно задать новые значения: они перезапишут текущие.') : null,
+    h('div', { class: 'table-wrap' }, h('table', null,
+      h('thead', null, h('tr', null, h('th', null, 'Ресурс'), h('th', null, 'Лимит'), r.running ? h('th', null, 'Сейчас') : null, h('th', null, ''))),
+      h('tbody', null, rows))), bar.bar);
+}
+
+// ---------- terminal ----------
+let xtermLoading = null;
+function loadXterm() {
+  if (window.Terminal && window.FitAddon) return Promise.resolve();
+  if (!xtermLoading) {
+    const add = (el) => new Promise((ok, bad) => { el.onload = ok; el.onerror = () => bad(new Error('не удалось загрузить ' + (el.src || el.href))); document.head.append(el); });
+    xtermLoading = Promise.all([
+      add(h('link', { rel: 'stylesheet', href: '/vendor/xterm.css' })),
+      add(h('script', { src: '/vendor/xterm.js' })).then(() => add(h('script', { src: '/vendor/addon-fit.js' }))),
+    ]).catch((e) => { xtermLoading = null; throw e; });
+  }
+  return xtermLoading;
+}
+
+async function pageTerminal(name) {
+  const main = $('#main');
+  const enc = encodeURIComponent(name);
+  const { env: e } = await api('GET', '/api/envs/' + enc);
+  const backBtn = h('a', { class: 'btn', href: '#/env/' + enc }, '← К клетке');
+  if (!state.terminal || e.emulator !== 'jail' || e.status !== 1) {
+    const why = !state.terminal ? 'Терминал доступен администратору (параметр terminal_role в конфиге).'
+      : e.emulator !== 'jail' ? 'Терминал доступен только для клеток.' : 'Клетка не запущена.';
+    return fill(main, pageHead('Терминал: ' + name, backBtn), h('div', { class: 'banner warn' }, why),
+      e.emulator === 'jail' && e.status !== 1 && can('operator') ? envButtons(e, null, false) : null);
+  }
+  await loadXterm();
+  const pill = h('span', { class: 'pill off' }, 'подключение…');
+  const setPill = (cls, text) => { pill.className = 'pill ' + cls; pill.textContent = text; };
+  const box = h('div', { class: 'term-box' });
+  let ws = null;
+  const reconnect = h('button', { type: 'button', hidden: true, onclick: () => connect() }, 'Переподключить');
+  fill(main, pageHead('Терминал: ' + name, pill, reconnect, backBtn), box,
+    h('div', { class: 'muted small mt' }, 'Вы входите как root через cbsd jlogin. Сеанс закрывается через ',
+      'полчаса бездействия; если на хосте установлен tmux, CBSD сохраняет сеанс и при следующем входе подключится к нему.'));
+  const term = new window.Terminal({ cursorBlink: true, fontSize: 14, scrollback: 5000, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+    theme: { background: '#0d1117', foreground: '#d1d7e0' } });
+  const fit = new window.FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(box);
+  fit.fit();
+  const encoder = new TextEncoder();
+  const send = (data) => { if (ws && ws.readyState === WebSocket.OPEN) ws.send(data); };
+  term.onData((d) => send(encoder.encode(d)));
+  term.onBinary((d) => send(Uint8Array.from(d, (c) => c.charCodeAt(0))));
+  term.onResize(({ cols, rows }) => send(JSON.stringify({ type: 'resize', cols, rows })));
+  const connect = () => {
+    if (ws) ws.close();
+    setPill('run', 'подключение…');
+    reconnect.hidden = true;
+    const q = new URLSearchParams({ csrf: state.csrf, cols: term.cols, rows: term.rows });
+    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/api/envs/' + enc + '/terminal?' + q);
+    ws.binaryType = 'arraybuffer';
+    const me = ws;
+    ws.onopen = () => { setPill('on', 'подключено'); term.focus(); };
+    ws.onmessage = (ev) => term.write(typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data));
+    ws.onclose = (ev) => {
+      if (me !== ws) return;
+      setPill('off', 'отключено');
+      reconnect.hidden = false;
+      term.write('\r\n\x1b[33m[соединение закрыто' + (ev.reason ? ': ' + ev.reason : ev.code === 1006 ? ': сервер отклонил подключение' : '') + ']\x1b[0m\r\n');
+    };
+  };
+  const onResize = () => fit.fit();
+  window.addEventListener('resize', onResize);
+  connect();
+  state.cleanup = () => { window.removeEventListener('resize', onResize); const w = ws; ws = null; if (w) w.close(); term.dispose(); };
 }
 
 function snapshotCard(e) {
@@ -815,7 +1036,7 @@ function setTheme(t) {
   try {
     const r = await fetch('/api/session', { credentials: 'same-origin' });
     const d = await r.json();
-    if (r.ok) { Object.assign(state, { user: d.user, role: d.role, csrf: d.csrf, version: d.version }); route(); }
+    if (r.ok) { Object.assign(state, { user: d.user, role: d.role, csrf: d.csrf, version: d.version, terminal: !!d.terminal }); route(); }
     else renderLogin(d.has_users === false ? 'Пользователи не созданы: выполните на сервере «cbsd-web useradd admin»' : '');
   } catch (_) { renderLogin('Сервер недоступен'); }
 })();

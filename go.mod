@@ -3,6 +3,8 @@ module github.com/cbsd-web/cbsd-web
 go 1.24.7
 
 require (
+	github.com/coder/websocket v1.8.12
+	github.com/creack/pty v1.1.24
 	golang.org/x/crypto v0.40.0
 	golang.org/x/term v0.33.0
 	modernc.org/sqlite v1.38.2

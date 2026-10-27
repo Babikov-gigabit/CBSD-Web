@@ -4,6 +4,12 @@
 cmd="$1"
 case "$cmd" in
 version) echo "14.3.0 (fake)"; exit 0 ;;
+jlogin)
+	# Interactive stand-in for a jail shell (dev and tests only).
+	echo "fake jlogin: $2"
+	PS1='root@fake:~ # ' exec /bin/sh -i ;;
+jrctl)
+	case "$*" in *mode=show*) printf 'memoryuse=412M\nmaxproc=37\nopenfiles=310\npcpu=3\n'; exit 0 ;; esac ;;
 jsnapshot|bsnapshot)
 	case "$*" in *mode=list*) printf 'SNAPNAME  CREATED\nweb20251001 2025-10-01 10:00\n'; exit 0 ;; esac ;;
 esac

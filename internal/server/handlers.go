@@ -66,7 +66,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 	})
 	s.audit.Log(audit.Entry{User: u.Name, IP: ip, Event: "login", Result: "ok"})
-	writeJSON(w, http.StatusOK, map[string]any{"user": sess.User, "role": sess.Role, "csrf": sess.CSRF, "version": s.version})
+	writeJSON(w, http.StatusOK, map[string]any{"user": sess.User, "role": sess.Role, "csrf": sess.CSRF, "version": s.version, "terminal": s.terminalAllowed(sess.Role)})
 }
 
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +80,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "требуется вход")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": sess.User, "role": u.Role, "csrf": sess.CSRF, "version": s.version})
+	writeJSON(w, http.StatusOK, map[string]any{"user": sess.User, "role": u.Role, "csrf": sess.CSRF, "version": s.version, "terminal": s.terminalAllowed(u.Role)})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -920,4 +920,102 @@ func lastIndexByte(b []byte, c byte) int {
 		}
 	}
 	return -1
+}
+
+// ---------- jail configuration and limits ----------
+
+func (s *Server) loadJail(w http.ResponseWriter, r *http.Request) *cbsd.Env {
+	e := s.loadEnv(w, r)
+	if e != nil && e.Emulator != "jail" {
+		writeErr(w, http.StatusBadRequest, "доступно только для клеток")
+		return nil
+	}
+	return e
+}
+
+func (s *Server) handleJailConfig(w http.ResponseWriter, r *http.Request) {
+	e := s.loadJail(w, r)
+	if e == nil {
+		return
+	}
+	vals, err := s.db.JailConfig(r.Context(), e.Name)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, dbErrorMessage(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"groups": cbsd.ParamGroups, "params": cbsd.JailParams, "values": vals,
+		"running": e.Status == 1, "busy_job": s.jobs.Busy()[e.Name],
+	})
+}
+
+func (s *Server) handleJailConfigSet(w http.ResponseWriter, r *http.Request) {
+	e := s.loadJail(w, r)
+	if e == nil {
+		return
+	}
+	var u cbsd.JailConfigUpdate
+	if err := readJSON(r, &u); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	args, err := u.Args(e.Name, sessionFrom(r).sess.Role.Allows(auth.RoleAdmin), e.Status == 1)
+	if err != nil {
+		writeFieldErr(w, err)
+		return
+	}
+	s.submit(w, r, "Настройки "+e.Name, e.Name, args, nil)
+}
+
+func (s *Server) handleJailLimits(w http.ResponseWriter, r *http.Request) {
+	e := s.loadJail(w, r)
+	if e == nil {
+		return
+	}
+	res := map[string]any{"params": cbsd.RctlParams, "running": e.Status == 1}
+	vals, err := s.db.JailLimits(r.Context(), e.Name)
+	switch {
+	case err == nil:
+		res["values"] = vals
+	case errors.Is(err, os.ErrNotExist):
+		res["values"] = map[string]string{}
+	default:
+		res["values_error"] = "не удалось прочитать текущие лимиты: " + errText(err)
+	}
+	if e.Status == 1 {
+		// Current usage straight from rctl(8), as key=value lines.
+		out, err := s.runner.Output(r.Context(), 15*time.Second, "jrctl", "mode=show", "jname="+e.Name)
+		if err == nil {
+			usage := map[string]string{}
+			for _, line := range strings.Split(out, "\n") {
+				if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok && k != "" {
+					usage[k] = v
+				}
+			}
+			res["usage"] = usage
+		}
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+type limitsReq struct {
+	Values map[string]string `json:"values"`
+}
+
+func (s *Server) handleJailLimitsSet(w http.ResponseWriter, r *http.Request) {
+	e := s.loadJail(w, r)
+	if e == nil {
+		return
+	}
+	var req limitsReq
+	if err := readJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	args, err := cbsd.RctlArgs(e.Name, req.Values)
+	if err != nil {
+		writeFieldErr(w, err)
+		return
+	}
+	s.submit(w, r, "Лимиты "+e.Name, e.Name, args, nil)
 }

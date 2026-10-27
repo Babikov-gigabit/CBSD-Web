@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/cbsd-web/cbsd-web/internal/cbsd"
 )
 
 var schema = []string{
@@ -75,7 +77,46 @@ func Build(dir string) error {
 		return err
 	}
 	defer db.Close()
-	if err := run(db, append(append([]string{}, schema...), data...)); err != nil {
+	if err := run(db, schema); err != nil {
+		return err
+	}
+	// Give the jails table every column the settings page edits, as real CBSD has.
+	have := map[string]bool{"host_hostname": true, "ip4_addr": true, "astart": true, "ver": true, "baserw": true,
+		"vnet": true, "protected": true, "hidden": true, "interface": true}
+	defaults := map[string]string{"stop_timeout": "10", "mount_fdescfs": "1", "allow_procfs": "1", "allow_zfs": "1",
+		"allow_dying": "1", "allow_reserved_ports": "1", "persist": "1", "enforce_statfs": "1", "allow_unprivileged_proc_debug": "1",
+		"allow_suser": "1", "allow_extattr": "1", "sysvsem": "new", "sysvshm": "new", "sysvmsg": "new", "devfs_ruleset": "4",
+		"mount_devfs": "1", "exec_start": "/bin/sh /etc/rc", "exec_stop": "/bin/sh /etc/rc.shutdown"}
+	for _, p := range cbsd.JailParams {
+		if have[p.Name] {
+			continue
+		}
+		def := defaults[p.Name]
+		if def == "" {
+			def = "0"
+		}
+		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE jails ADD COLUMN %q TEXT DEFAULT '%s'", p.Name, def)); err != nil {
+			return err
+		}
+	}
+	if err := run(db, data); err != nil {
+		return err
+	}
+	// Limits of web1, as 'cbsd jrctl mode=set' stores them.
+	hdir := filepath.Join(dir, "jails-system", "web1", "helpers")
+	if err := os.MkdirAll(hdir, 0o755); err != nil {
+		return err
+	}
+	os.Remove(filepath.Join(hdir, "jrctl.sqlite"))
+	rd, err := sql.Open("sqlite", filepath.Join(hdir, "jrctl.sqlite"))
+	if err != nil {
+		return err
+	}
+	defer rd.Close()
+	if err := run(rd, []string{
+		`CREATE TABLE forms (idx INTEGER PRIMARY KEY, param TEXT, cur TEXT, new TEXT)`,
+		`INSERT INTO forms (param,cur,new) VALUES ('memoryuse','2g',''),('pcpu','50',''),('maxproc','0',''),('fsquota','20g','')`,
+	}); err != nil {
 		return err
 	}
 	nd, err := sql.Open("sqlite", filepath.Join(dbdir, "nodes.sqlite"))

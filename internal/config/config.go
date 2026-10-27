@@ -46,6 +46,11 @@ type Config struct {
 	MaxConcurrentJobs     int      `json:"max_concurrent_jobs"`
 	CommandTimeoutMinutes int      `json:"command_timeout_minutes"`
 	AllowedNetworks       []string `json:"allowed_networks"`
+	// Minimum role for the in-browser jail terminal: admin, operator or disabled.
+	// A jail shell is root inside the jail, so the default is admin.
+	TerminalRole string `json:"terminal_role"`
+	// Close terminals without input or output for this long.
+	TerminalIdleMinutes int `json:"terminal_idle_minutes"`
 
 	allowed []*net.IPNet
 }
@@ -65,6 +70,8 @@ func Default() *Config {
 		SessionMaxHours:       12,
 		MaxConcurrentJobs:     4,
 		CommandTimeoutMinutes: 120,
+		TerminalRole:          "admin",
+		TerminalIdleMinutes:   30,
 		AllowedNetworks:       []string{"127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"},
 	}
 }
@@ -113,6 +120,16 @@ func (c *Config) finish() error {
 	}
 	if c.CommandTimeoutMinutes <= 0 {
 		c.CommandTimeoutMinutes = 120
+	}
+	switch c.TerminalRole {
+	case "":
+		c.TerminalRole = "admin"
+	case "admin", "operator", "disabled":
+	default:
+		return fmt.Errorf("terminal_role must be admin, operator or disabled: %q", c.TerminalRole)
+	}
+	if c.TerminalIdleMinutes <= 0 {
+		c.TerminalIdleMinutes = 30
 	}
 	c.allowed = nil
 	for _, s := range c.AllowedNetworks {
