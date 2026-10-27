@@ -1,0 +1,147 @@
+package server
+
+import (
+	"context"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/coder/websocket"
+)
+
+func TestJailConfigAndLimits(t *testing.T) {
+	_, newClient := setup(t)
+	view, oper, admin := newClient("view"), newClient("oper"), newClient("admin")
+
+	resp, m := view.do("GET", "/api/envs/web1/config", nil, nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("config: %d %v", resp.StatusCode, m)
+	}
+	vals := m["values"].(map[string]any)
+	if vals["devfs_ruleset"] != "4" || vals["sysvshm"] != "new" || vals["host_hostname"] != "web1.example.org" {
+		t.Errorf("values: %v", vals)
+	}
+	if m["running"] != true || len(m["params"].([]any)) < 60 {
+		t.Errorf("spec: running=%v params=%d", m["running"], len(m["params"].([]any)))
+	}
+	if resp, _ := view.do("GET", "/api/envs/vm_freebsd/config", nil, nil); resp.StatusCode != 400 {
+		t.Errorf("vm config: %d", resp.StatusCode)
+	}
+
+	if resp, _ := view.do("PATCH", "/api/envs/build/config", map[string]any{"values": map[string]string{"allow_raw_sockets": "1"}}, nil); resp.StatusCode != 403 {
+		t.Errorf("viewer patch: %d", resp.StatusCode)
+	}
+	if resp, m := oper.do("PATCH", "/api/envs/build/config", map[string]any{"values": map[string]string{"exec_master_poststart": "/root/up.sh"}}, nil); resp.StatusCode != 422 || m["field"] != "exec_master_poststart" {
+		t.Errorf("operator hook: %d %v", resp.StatusCode, m)
+	}
+	if resp, m := oper.do("PATCH", "/api/envs/web1/config", map[string]any{"values": map[string]string{"vnet": "1"}}, nil); resp.StatusCode != 422 || m["field"] != "restart" {
+		t.Errorf("running non-live: %d %v", resp.StatusCode, m)
+	}
+	resp, m = oper.do("PATCH", "/api/envs/build/config", map[string]any{"values": map[string]string{"allow_raw_sockets": "1", "sysvshm": "new"}}, nil)
+	if resp.StatusCode != 202 {
+		t.Fatalf("patch: %d %v", resp.StatusCode, m)
+	}
+	jobOutput(t, oper, m)
+	if resp, m := admin.do("PATCH", "/api/envs/db1/config", map[string]any{"values": map[string]string{"exec_master_poststart": "/root/up.sh"}, "restart": true}, nil); resp.StatusCode != 202 {
+		t.Errorf("admin hook: %d %v", resp.StatusCode, m)
+	} else {
+		jobOutput(t, admin, m)
+	}
+
+	resp, m = view.do("GET", "/api/envs/web1/limits", nil, nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("limits: %d %v", resp.StatusCode, m)
+	}
+	if lv := m["values"].(map[string]any); lv["memoryuse"] != "2g" || lv["pcpu"] != "50" {
+		t.Errorf("limit values: %v", lv)
+	}
+	if u, _ := m["usage"].(map[string]any); u["memoryuse"] != "412M" {
+		t.Errorf("usage: %v", m["usage"])
+	}
+	if resp, m := view.do("GET", "/api/envs/build/limits", nil, nil); resp.StatusCode != 200 || len(m["values"].(map[string]any)) != 0 {
+		t.Errorf("no limits file: %d %v", resp.StatusCode, m)
+	}
+	if resp, m := oper.do("PUT", "/api/envs/build/limits", map[string]any{"values": map[string]string{"memoryuse": "1g;reboot"}}, nil); resp.StatusCode != 422 || m["field"] != "memoryuse" {
+		t.Errorf("bad limit: %d %v", resp.StatusCode, m)
+	}
+	resp, m = oper.do("PUT", "/api/envs/build/limits", map[string]any{"values": map[string]string{"memoryuse": "1g", "pcpu": "100"}}, nil)
+	if resp.StatusCode != 202 {
+		t.Fatalf("limits put: %d %v", resp.StatusCode, m)
+	}
+	if out := jobOutput(t, oper, m); !strings.Contains(out, "jrctl mode=set jname=build memoryuse=1g pcpu=100") {
+		t.Errorf("limits job output: %q", out)
+	}
+}
+
+// jobOutput waits for the job in a 202 response and returns its output.
+func jobOutput(t *testing.T, c *client, m map[string]any) string {
+	t.Helper()
+	res := waitJob(t, c, m["job"].(map[string]any)["id"].(string))
+	if st := res["job"].(map[string]any)["state"]; st != "done" {
+		t.Errorf("job state %v: %v", st, res["output"])
+	}
+	out, _ := res["output"].(string)
+	return out
+}
+
+func dialTerminal(t *testing.T, c *client, path string, origin string) (*websocket.Conn, *http.Response, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	h := http.Header{}
+	if origin != "" {
+		h.Set("Origin", origin)
+	}
+	return websocket.Dial(ctx, "ws"+strings.TrimPrefix(c.base, "http")+path, &websocket.DialOptions{HTTPClient: c.hc, HTTPHeader: h})
+}
+
+func TestTerminal(t *testing.T) {
+	ts, newClient := setup(t)
+	admin, oper := newClient("admin"), newClient("oper")
+
+	// Operators are refused by default, and a missing CSRF token or foreign Origin is refused.
+	if _, resp, err := dialTerminal(t, oper, "/api/envs/web1/terminal?csrf="+oper.csrf, ts.URL); err == nil || resp.StatusCode != 403 {
+		t.Errorf("operator terminal: %v", err)
+	}
+	if _, resp, err := dialTerminal(t, admin, "/api/envs/web1/terminal", ts.URL); err == nil || resp.StatusCode != 403 {
+		t.Errorf("no csrf: %v", err)
+	}
+	if _, resp, err := dialTerminal(t, admin, "/api/envs/web1/terminal?csrf="+admin.csrf, "https://evil.example"); err == nil || resp.StatusCode != 403 {
+		t.Errorf("foreign origin: %v", err)
+	}
+	if _, resp, err := dialTerminal(t, admin, "/api/envs/build/terminal?csrf="+admin.csrf, ts.URL); err == nil || resp.StatusCode != 409 {
+		t.Errorf("stopped jail: %v", err)
+	}
+
+	conn, _, err := dialTerminal(t, admin, "/api/envs/web1/terminal?cols=100&rows=30&csrf="+admin.csrf, ts.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, []byte(`{"type":"resize","cols":90,"rows":25}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte("echo marker-$((40+2))\n")); err != nil {
+		t.Fatal(err)
+	}
+	var got strings.Builder
+	for !strings.Contains(got.String(), "marker-42") {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("read: %v (got %q)", err, got.String())
+		}
+		got.Write(data)
+	}
+	if !strings.Contains(got.String(), "fake jlogin: jname=web1") {
+		t.Errorf("banner missing: %q", got.String())
+	}
+	conn.Write(ctx, websocket.MessageBinary, []byte("exit\n"))
+	for {
+		if _, _, err := conn.Read(ctx); err != nil {
+			break
+		}
+	}
+}

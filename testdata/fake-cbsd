@@ -1,0 +1,24 @@
+#!/bin/sh
+# Stand-in for /usr/local/bin/cbsd used in tests and UI development.
+# Prints its arguments (with colour codes, like real cbsd) and simulates work.
+cmd="$1"
+case "$cmd" in
+version) echo "14.3.0 (fake)"; exit 0 ;;
+jlogin)
+	# Interactive stand-in for a jail shell (dev and tests only).
+	echo "fake jlogin: $2"
+	PS1='root@fake:~ # ' exec /bin/sh -i ;;
+jrctl)
+	case "$*" in *mode=show*) printf 'memoryuse=412M\nmaxproc=37\nopenfiles=310\npcpu=3\n'; exit 0 ;; esac ;;
+jsnapshot|bsnapshot)
+	case "$*" in *mode=list*)
+		j=$(printf '%s\n' "$@" | sed -n 's/^jname=//p')
+		printf 'zroot/jails/%s@web20251001093000 2025-10-01__09:30 1.21G\nzroot/jails/%s@before-upgrade 2025-10-20__18:05 1.34G\n' "$j" "$j"; exit 0 ;; esac ;;
+esac
+printf '\033[0;32mfake cbsd\033[0m: %s\n' "$*"
+for i in 1 2 3; do
+	echo "step $i/3 ..."
+	sleep "${FAKE_CBSD_DELAY:-0.3}"
+done
+case "$*" in *jname=fail*|*new=fail\ *|*new=fail) echo "error: simulated failure" >&2; exit 1 ;; esac
+echo done

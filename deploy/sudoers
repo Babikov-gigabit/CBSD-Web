@@ -1,0 +1,8 @@
+# /usr/local/etc/sudoers.d/cbsd-web
+# The web daemon runs as the unprivileged user "cbsdweb" and may only call
+# the cbsd CLI and its initenv helper as root, without a password.
+# NOTE: whoever controls the cbsdweb account can manage every jail and VM on
+# this host, so treat that account (and the web admin users) as privileged.
+Defaults:cbsdweb !requiretty, !lecture, env_reset
+Defaults:cbsdweb env_keep += "workdir NOCOLOR NOINTER"
+cbsdweb ALL=(root) NOPASSWD: /usr/local/bin/cbsd, /usr/local/cbsd/sudoexec/initenv

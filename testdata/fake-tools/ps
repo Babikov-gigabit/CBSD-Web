@@ -1,0 +1,3 @@
+#!/bin/sh
+# Stand-in for FreeBSD ps -J/-p ... -o pcpu=,rss=,vsz=
+printf ' 2.5  41236  120480\n 0.4  10240   20480\n 0.0   2048   12000\n'
